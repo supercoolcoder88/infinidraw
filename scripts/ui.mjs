@@ -7,7 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
-const dir = path.join(os.tmpdir(), 'infinidraw-ui');
+const session = process.env.UI_SESSION;
+const dir = path.join(
+  os.tmpdir(),
+  `infinidraw-ui${session ? `-${session}` : ''}`,
+);
 const stateFile = path.join(dir, 'state.json');
 const [cmd, ...args] = process.argv.slice(2);
 const state = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -86,6 +90,36 @@ const mouse = (app, type, { x, y }, extra = {}) =>
     ...extra,
   });
 
+const locate = (app, target) =>
+  /^\d+,\d+$/.test(target) ? point(target) : app.evaluate(find(target));
+
+async function press(target, button = 'left', clicks = 1) {
+  const app = await connect();
+  const at = await locate(app, target);
+  await mouse(app, 'mouseMoved', at, { button: 'none' });
+  for (let clickCount = 1; clickCount <= clicks; clickCount++) {
+    await mouse(app, 'mousePressed', at, { button, clickCount });
+    await mouse(app, 'mouseReleased', at, { button, clickCount });
+  }
+}
+
+// Waits for the page to load and stop reloading, comparing timeOrigin across polls.
+async function settle(previous) {
+  let last;
+  for (let i = 0; i < 120; i++, await sleep(500)) {
+    try {
+      const app = await connect();
+      const origin = await app.evaluate(
+        `document.readyState === 'complete' && performance.timeOrigin`,
+      );
+      app.close();
+      if (origin && origin === last && origin !== previous) return;
+      last = origin;
+    } catch {}
+  }
+  throw new Error(`App did not come up, see ${path.join(dir, 'app.log')}`);
+}
+
 const commands = {
   async start() {
     if (fs.existsSync(stateFile))
@@ -112,6 +146,7 @@ const commands = {
         '--ozone-platform=headless',
         `--remote-debugging-port=${port}`,
         `--user-data-dir=${path.join(dir, 'userdata')}`,
+        '--enable-logging=stderr',
       ],
       { cwd: root, detached: true, stdio: ['ignore', log, log] },
     );
@@ -121,21 +156,21 @@ const commands = {
       JSON.stringify({ pid: child.pid, port, width, height }),
     );
 
-    // The dev page can reload once right after first load, so wait until it settles.
-    let last;
-    for (let i = 0; i < 120; i++, await sleep(500)) {
-      try {
-        const app = await connect();
-        const origin = await app.evaluate(
-          `document.readyState === 'complete' && performance.timeOrigin`,
-        );
-        app.close();
-        if (origin && origin === last)
-          return console.log(`ready on port ${port}`);
-        last = origin;
-      } catch {}
-    }
-    throw new Error(`App did not come up, see ${path.join(dir, 'app.log')}`);
+    await settle();
+    console.log(`ready on port ${port}`);
+  },
+
+  async reset(storage = '{}') {
+    const app = await connect();
+    const origin = await app.evaluate(`(() => {
+      localStorage.clear();
+      Object.entries(${storage}).forEach(([k, v]) =>
+        localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)));
+      setTimeout(() => location.reload());
+      return performance.timeOrigin;
+    })()`);
+    await settle(origin);
+    console.log('reset');
   },
 
   async stop() {
@@ -166,22 +201,28 @@ const commands = {
     );
   },
 
-  async click(target) {
-    const app = await connect();
-    const at = /^\d+,\d+$/.test(target)
-      ? point(target)
-      : await app.evaluate(find(target));
-    await mouse(app, 'mouseMoved', at);
-    await mouse(app, 'mousePressed', at, { clickCount: 1 });
-    await mouse(app, 'mouseReleased', at, { clickCount: 1 });
-  },
+  click: (target) => press(target),
+  dblclick: (target) => press(target, 'left', 2),
+  rightclick: (target) => press(target, 'right'),
 
   async hover(target) {
     const app = await connect();
-    const at = /^\d+,\d+$/.test(target)
-      ? point(target)
-      : await app.evaluate(find(target));
-    await mouse(app, 'mouseMoved', at, { button: 'none' });
+    await mouse(app, 'mouseMoved', await locate(app, target), {
+      button: 'none',
+    });
+  },
+
+  // CDP wheel events are hit-tested against the real 1x1 headless window, so dispatch in the page.
+  async wheel(at, delta, modifier) {
+    const { x, y } = point(at);
+    const [deltaX, deltaY] = delta.split(',').map(Number);
+    const init = { bubbles: true, cancelable: true, clientX: x, clientY: y };
+    Object.assign(init, { deltaX, deltaY, ctrlKey: modifier === 'Ctrl' });
+    await (
+      await connect()
+    ).evaluate(
+      `document.elementFromPoint(${x}, ${y}).dispatchEvent(new WheelEvent('wheel', ${JSON.stringify(init)}))`,
+    );
   },
 
   async drag(from, to) {
@@ -242,7 +283,7 @@ const commands = {
 
 if (!commands[cmd]) {
   console.error(
-    'usage: node scripts/ui.mjs start [WxH] | shot [file] | click <css|text=...|x,y> | hover <css|text=...|x,y> | drag <x,y> <x,y> | type <text> | key <[Ctrl+]Key> | eval <js> | stop',
+    'usage: node scripts/ui.mjs start [WxH] | reset [json] | shot [file] | click|dblclick|rightclick|hover <css|text=...|x,y> | drag <x,y> <x,y> | wheel <x,y> <dx,dy> [Ctrl] | type <text> | key <[Ctrl+]Key> | eval <js> | stop',
   );
   process.exit(1);
 }

@@ -1,0 +1,79 @@
+{
+  "infinidraw:shapes": [
+    {
+      "id": "api",
+      "type": "rect",
+      "x": 200,
+      "y": 200,
+      "w": 360,
+      "h": 240,
+      "dotted": false,
+      "text": "api",
+      "children": [
+        {
+          "id": "auth",
+          "type": "rect",
+          "x": 0,
+          "y": 0,
+          "w": 300,
+          "h": 160,
+          "dotted": false,
+          "text": "auth"
+        },
+        {
+          "id": "db",
+          "type": "rect",
+          "x": 500,
+          "y": 0,
+          "w": 300,
+          "h": 160,
+          "dotted": true,
+          "text": "db",
+          "color": "#3b82f6"
+        },
+        {
+          "id": "q",
+          "type": "arrow",
+          "x": 310,
+          "y": 80,
+          "w": 180,
+          "h": 0,
+          "dotted": false,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "id": "web",
+      "type": "rect",
+      "x": 760,
+      "y": 260,
+      "w": 260,
+      "h": 120,
+      "dotted": true,
+      "text": "web",
+      "color": "#e5484d"
+    },
+    {
+      "id": "call",
+      "type": "arrow",
+      "x": 750,
+      "y": 320,
+      "w": -180,
+      "h": 0,
+      "dotted": false,
+      "text": ""
+    },
+    {
+      "id": "note",
+      "type": "text",
+      "x": 200,
+      "y": 500,
+      "w": 288,
+      "h": 40,
+      "dotted": false,
+      "text": "free text\nsecond line",
+      "color": "#30a46c"
+    }
+  ]
+}

@@ -264,3 +264,67 @@ it('shows a hint only while the canvas is empty', () => {
   drawRectangle();
   expect(screen.queryByText(/double-click for text/)).toBeNull();
 });
+
+const zoomInto = (x: number, y: number, deltaY = -900) =>
+  fireEvent.wheel(canvas(), { ...at(x, y), deltaY, ctrlKey: true });
+const location = () => screen.queryByLabelText('Breadcrumb')?.textContent;
+const label = (text: string) => {
+  fireEvent.doubleClick(canvas(), at(200, 150));
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: text } });
+  fireEvent.blur(screen.getByRole('textbox'));
+};
+
+it('goes inside a rectangle by zooming into it and back out by zooming out', () => {
+  drawRectangle();
+  label('api');
+  zoomInto(200, 150);
+  expect(location()).toBe('Home/api');
+  expect(screen.getByText(/double-click for text/)).toBeTruthy();
+
+  drawRectangle();
+  expect(saved()).toHaveLength(1);
+  expect(saved()[0].children).toHaveLength(1);
+  ctrl('z');
+  expect(saved()[0].children).toEqual([]);
+
+  zoomInto(200, 150, 300);
+  expect(location()).toBeUndefined();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([10, 10], [400, 400]);
+  expect(saved()).toHaveLength(2);
+});
+
+it('stops at 800% when zooming into empty canvas', () => {
+  drawRectangle();
+  zoomInto(600, 600);
+  expect(location()).toBeUndefined();
+  expect(zoom()).toBe('800%');
+});
+
+it('enters a rectangle from its context menu and stays there after a restart', () => {
+  drawRectangle();
+  fireEvent.contextMenu(canvas(), at(200, 150));
+  choose('Enter');
+  expect(location()).toBe('Home/Untitled');
+
+  cleanup();
+  render(<App />);
+  expect(location()).toBe('Home/Untitled');
+});
+
+it('jumps back up through nested rectangles from the breadcrumb', () => {
+  drawRectangle();
+  label('api');
+  zoomInto(200, 150);
+  drawRectangle();
+  label('auth');
+  zoomInto(200, 150);
+  expect(location()).toBe('Home/api/auth');
+
+  fireEvent.click(screen.getByText('api'));
+  expect(location()).toBe('Home/api');
+  fireEvent.click(screen.getByText('Home'));
+  expect(location()).toBeUndefined();
+  fireEvent.doubleClick(canvas(), at(512, 384));
+  expect(screen.getByRole('textbox')).toHaveProperty('value', 'api');
+});

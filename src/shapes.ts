@@ -9,6 +9,7 @@ export type Shape = {
   dotted: boolean;
   text: string;
   color?: string;
+  children?: Shape[];
 };
 export type Point = { x: number; y: number };
 export type View = Point & { zoom: number };
@@ -18,6 +19,7 @@ const LIGHT = { ink: '#1c1c1a', accent: '', surface: '#fff' };
 
 export const FONT = 16;
 export const LINE = FONT * 1.25;
+const PAD = 24;
 
 export const bounds = (s: Shape) => ({
   x: Math.min(s.x, s.x + s.w),
@@ -25,6 +27,34 @@ export const bounds = (s: Shape) => ({
   w: Math.abs(s.w),
   h: Math.abs(s.h),
 });
+
+const extent = (shapes: Shape[]) => {
+  const boxes = shapes.length
+    ? shapes.map(bounds)
+    : [{ x: 0, y: 0, w: 0, h: 0 }];
+  const x = Math.min(...boxes.map((b) => b.x)) - PAD;
+  const y = Math.min(...boxes.map((b) => b.y)) - PAD;
+  return {
+    x,
+    y,
+    w: Math.max(...boxes.map((b) => b.x + b.w)) + PAD - x,
+    h: Math.max(...boxes.map((b) => b.y + b.h)) + PAD - y,
+  };
+};
+
+// A rectangle's inner canvas sits on its face, below its label: parent = frame + inner * k.
+export const frame = (s: Shape) => {
+  const b = bounds(s);
+  const top = s.text ? s.text.split('\n').length * LINE + 8 : 0;
+  const h = Math.max(b.h - top, 1);
+  const c = extent(s.children ?? []);
+  const k = Math.min((b.w || 1) / Math.max(c.w, 1000), h / c.h);
+  return {
+    k,
+    x: b.x + b.w / 2 - (c.x + c.w / 2) * k,
+    y: b.y + top + h / 2 - (c.y + c.h / 2) * k,
+  };
+};
 
 // JetBrains Mono glyphs are 0.6em wide.
 export const textSize = (text: string) => {
@@ -66,25 +96,15 @@ export const hit = (s: Shape, p: Point, tolerance: number) => {
   return Math.hypot(p.x - s.x - t * s.w, p.y - s.y - t * s.h) <= tolerance;
 };
 
-export function draw(
+function paint(
   ctx: CanvasRenderingContext2D,
   shapes: Shape[],
-  view: View,
-  colors: Colors,
-  selected?: Shape,
+  ink: string,
+  scale: number,
   editingId?: string,
-  ratio = devicePixelRatio,
 ) {
-  const scale = ratio * view.zoom;
-  ctx.setTransform(scale, 0, 0, scale, view.x * ratio, view.y * ratio);
-  ctx.lineWidth = 2;
-  ctx.lineCap = ctx.lineJoin = 'round';
-  ctx.strokeStyle = ctx.fillStyle = colors.ink;
-  ctx.font = `${FONT}px 'JetBrains Mono'`;
-  ctx.textBaseline = 'middle';
-
   for (const s of shapes) {
-    ctx.strokeStyle = ctx.fillStyle = s.color ?? colors.ink;
+    ctx.strokeStyle = ctx.fillStyle = s.color ?? ink;
     const end = { x: s.x + s.w, y: s.y + s.h };
     ctx.setLineDash(s.dotted ? [1, 6] : []);
     ctx.beginPath();
@@ -107,8 +127,17 @@ export function draw(
       ctx.stroke();
     }
 
-    if (s.id === editingId) continue;
     const b = bounds(s);
+    if (s.children?.length && b.w * scale > 8) {
+      const f = frame(s);
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.scale(f.k, f.k);
+      paint(ctx, s.children, ink, scale * f.k);
+      ctx.restore();
+    }
+
+    if (s.id === editingId) continue;
     const lines = s.text.split('\n');
     const centred = s.type === 'rect';
     ctx.textAlign = centred ? 'center' : 'left';
@@ -117,10 +146,30 @@ export function draw(
         line,
         centred ? b.x + b.w / 2 : b.x,
         // Canvas 'middle' sits 1px above where a textarea line box puts the glyphs.
-        b.y + b.h / 2 + (i - (lines.length - 1) / 2) * LINE + 1,
+        (s.children?.length
+          ? b.y + 4 + (i + 0.5) * LINE
+          : b.y + b.h / 2 + (i - (lines.length - 1) / 2) * LINE) + 1,
       ),
     );
   }
+}
+
+export function draw(
+  ctx: CanvasRenderingContext2D,
+  shapes: Shape[],
+  view: View,
+  colors: Colors,
+  selected?: Shape,
+  editingId?: string,
+  ratio = devicePixelRatio,
+) {
+  const scale = ratio * view.zoom;
+  ctx.setTransform(scale, 0, 0, scale, view.x * ratio, view.y * ratio);
+  ctx.lineWidth = 2;
+  ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.font = `${FONT}px 'JetBrains Mono'`;
+  ctx.textBaseline = 'middle';
+  paint(ctx, shapes, colors.ink, scale, editingId);
 
   if (!selected) return;
   ctx.strokeStyle = colors.accent;
@@ -149,13 +198,10 @@ export function draw(
 
 export function exportPng(shapes: Shape[]) {
   if (!shapes.length) return;
-  const pad = 24;
-  const boxes = shapes.map(bounds);
-  const x = Math.min(...boxes.map((b) => b.x)) - pad;
-  const y = Math.min(...boxes.map((b) => b.y)) - pad;
+  const { x, y, w, h } = extent(shapes);
   const canvas = document.createElement('canvas');
-  canvas.width = (Math.max(...boxes.map((b) => b.x + b.w)) + pad - x) * 2;
-  canvas.height = (Math.max(...boxes.map((b) => b.y + b.h)) + pad - y) * 2;
+  canvas.width = w * 2;
+  canvas.height = h * 2;
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = LIGHT.surface;
   ctx.fillRect(0, 0, canvas.width, canvas.height);

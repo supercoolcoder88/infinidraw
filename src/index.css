@@ -100,6 +100,26 @@ button:disabled {
   left: 12px;
 }
 
+.crumbs {
+  top: 12px;
+  left: 62px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.crumbs span {
+  padding: 0 6px;
+  color: var(--ink);
+}
+
+.crumbs button,
+.crumbs span {
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .controls {
   bottom: 12px;
   left: 12px;

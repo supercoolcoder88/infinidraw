@@ -1,9 +1,10 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { Fragment, useEffect, useReducer, useRef, useState } from 'react';
 import {
   bounds,
   draw,
   exportPng,
   FONT,
+  frame,
   handles,
   hit,
   LINE,
@@ -12,10 +13,12 @@ import {
   type Shape,
   type View,
 } from './shapes';
+import { flushSync } from 'react-dom';
 import { Icon, Menu } from './Menu';
 
 const STORAGE_KEY = 'infinidraw:shapes';
 const VIEW_KEY = 'infinidraw:view';
+const PATH_KEY = 'infinidraw:path';
 const THEME_KEY = 'infinidraw:theme';
 // Mid-tones that read on both the light and dark canvas; no colour means theme ink.
 const COLORS = [
@@ -44,6 +47,7 @@ const SHORTCUTS = [
   ['Ctrl+Shift+Z', 'Redo'],
   ['Ctrl+= / Ctrl+-', 'Zoom in / out'],
   ['Ctrl+0', 'Reset zoom'],
+  ['Zoom into a rectangle', 'Go inside it'],
   ['Escape', 'Deselect'],
   ['?', 'Keyboard shortcuts'],
 ];
@@ -68,9 +72,46 @@ type Drag = {
   handle?: Point;
 };
 
+const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
+  zoom,
+  x: cx - ((cx - v.x) * zoom) / v.zoom,
+  y: cy - ((cy - v.y) * zoom) / v.zoom,
+});
+const centred = (s: Shape, zoom: number): View => {
+  const b = bounds(s);
+  return {
+    zoom,
+    x: innerWidth / 2 - (b.x + b.w / 2) * zoom,
+    y: innerHeight / 2 - (b.y + b.h / 2) * zoom,
+  };
+};
+const covers = (s: Shape, v: View) => {
+  const b = bounds(s);
+  return (
+    v.x + b.x * v.zoom <= 0 &&
+    v.y + b.y * v.zoom <= 0 &&
+    v.x + (b.x + b.w) * v.zoom >= innerWidth &&
+    v.y + (b.y + b.h) * v.zoom >= innerHeight
+  );
+};
+const nest = (
+  level: Shape[],
+  [id, ...rest]: string[],
+  f: (s: Shape[]) => Shape[],
+): Shape[] =>
+  id
+    ? level.map((s) =>
+        s.id === id ? { ...s, children: nest(s.children ?? [], rest, f) } : s,
+      )
+    : f(level);
+const name = (s: Shape) => s.text.split('\n')[0] || 'Untitled';
+
 export function App() {
-  const [shapes, setShapes] = useState<Shape[]>(() =>
+  const [root, setRoot] = useState<Shape[]>(() =>
     JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]'),
+  );
+  const [path, setPath] = useState<string[]>(() =>
+    JSON.parse(localStorage.getItem(PATH_KEY) ?? '[]'),
   );
   const [tool, setTool] = useState<Tool>('select');
   const [dotted, setDotted] = useState(false);
@@ -98,12 +139,28 @@ export function App() {
   const future = useRef<Shape[][]>([]);
   const space = useRef(false);
 
+  // The rectangles we are inside, outermost first, and the shapes of the innermost.
+  const trail: Shape[] = [];
+  let shapes = root;
+  for (const id of path) {
+    const s = shapes.find((s) => s.id === id);
+    if (!s) break;
+    trail.push(s);
+    shapes = s.children ?? [];
+  }
+  const ids = trail.map((s) => s.id);
+  const inside = trail.at(-1);
+  const setShapes = (next: Shape[] | ((s: Shape[]) => Shape[])) =>
+    setRoot((r) =>
+      nest(r, ids, typeof next === 'function' ? next : () => next),
+    );
+
   const selected = shapes.find((s) => s.id === selectedId);
   const edited = shapes.find((s) => s.id === editing?.id);
 
   const commit = (before: Shape[], next: Shape[]) => {
     if (JSON.stringify(before) !== JSON.stringify(next)) {
-      past.current.push(before);
+      past.current.push(nest(root, ids, () => before));
       future.current = [];
     }
     setShapes(next);
@@ -112,8 +169,8 @@ export function App() {
   const timeTravel = (from: Shape[][], to: Shape[][]) => {
     const target = from.pop();
     if (!target) return;
-    to.push(shapes);
-    setShapes(target);
+    to.push(root);
+    setRoot(target);
   };
   const undo = () => timeTravel(past.current, future.current);
   const redo = () => timeTravel(future.current, past.current);
@@ -156,17 +213,53 @@ export function App() {
     commit(shapes, []);
     setSelectedId(undefined);
   };
-  const zoomTo = (
-    f: (zoom: number) => number,
-    cx = innerWidth / 2,
-    cy = innerHeight / 2,
-  ) =>
-    setView((v) => {
-      const zoom = Math.min(8, Math.max(0.1, f(v.zoom)));
-      const k = zoom / v.zoom;
-      return { zoom, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k };
+  const go = (to: string[], v: View) => {
+    setPath(to);
+    setView(v);
+    setSelectedId(undefined);
+  };
+  const enter = (s: Shape, v: View) => {
+    const f = frame(s);
+    go([...ids, s.id], {
+      zoom: v.zoom * f.k,
+      x: v.x + f.x * v.zoom,
+      y: v.y + f.y * v.zoom,
     });
-  const resetZoom = () => zoomTo(() => 1);
+  };
+  const fill = (s: Shape, pick: (...n: number[]) => number) =>
+    pick(innerWidth / (Math.abs(s.w) || 1), innerHeight / (Math.abs(s.h) || 1));
+  const leaveTo = (depth: number) =>
+    go(
+      ids.slice(0, depth),
+      centred(trail[depth], fill(trail[depth], Math.min) / 2),
+    );
+  // Zooming in until a rectangle fills the window goes inside it, zooming back out leaves.
+  const zoomBy = (k: number, cx = innerWidth / 2, cy = innerHeight / 2) => {
+    const target =
+      k > 1
+        ? under(toWorld({ clientX: cx, clientY: cy }), 0).find(
+            (s) => s.type === 'rect',
+          )
+        : undefined;
+    const max = target ? Infinity : Math.max(8, view.zoom);
+    const min = inside ? 0 : Math.min(0.1, view.zoom);
+    const next = zoomAt(
+      view,
+      Math.min(max, Math.max(min, view.zoom * k)),
+      cx,
+      cy,
+    );
+    if (target && covers(target, next)) return enter(target, next);
+    if (inside && k < 1) {
+      const f = frame(inside);
+      const zoom = next.zoom / f.k;
+      const outer = { zoom, x: next.x - f.x * zoom, y: next.y - f.y * zoom };
+      if (!covers(inside, outer)) return go(ids.slice(0, -1), outer);
+    }
+    setView(next);
+  };
+  const resetZoom = () =>
+    setView(zoomAt(view, 1, innerWidth / 2, innerHeight / 2));
   const toolCursor = tool === 'select' ? 'default' : 'crosshair';
   const setCursor = (c: string) => (canvas.current!.style.cursor = c);
   const handleAt = (s: Shape, p: Point) =>
@@ -181,17 +274,19 @@ export function App() {
     y: (e.clientY - view.y) / view.zoom,
   });
   // The smallest shape under the pointer wins so boxes inside boxes stay reachable.
-  const shapeAt = (p: Point) => {
+  const under = (p: Point, tolerance: number) => {
     const area = (s: Shape) => (s.type === 'arrow' ? 0 : Math.abs(s.w * s.h));
     return shapes
-      .filter((s) => hit(s, p, 6 / view.zoom))
-      .sort((a, b) => area(a) - area(b))[0];
+      .filter((s) => hit(s, p, tolerance))
+      .sort((a, b) => area(a) - area(b));
   };
+  const shapeAt = (p: Point) => under(p, 6 / view.zoom)[0];
 
   useEffect(
-    () => localStorage.setItem(STORAGE_KEY, JSON.stringify(shapes)),
-    [shapes],
+    () => localStorage.setItem(STORAGE_KEY, JSON.stringify(root)),
+    [root],
   );
+  useEffect(() => localStorage.setItem(PATH_KEY, JSON.stringify(path)), [path]);
   useEffect(() => localStorage.setItem(VIEW_KEY, JSON.stringify(view)), [view]);
 
   useEffect(() => {
@@ -224,8 +319,8 @@ export function App() {
         else if (key === 'z') undo();
         else if (key === 'd') duplicate();
         else if (key === '0') resetZoom();
-        else if (key === '=' || key === '+') zoomTo((z) => z * 1.2);
-        else if (key === '-') zoomTo((z) => z / 1.2);
+        else if (key === '=' || key === '+') zoomBy(1.2);
+        else if (key === '-') zoomBy(1 / 1.2);
         else return;
         return e.preventDefault();
       }
@@ -386,7 +481,7 @@ export function App() {
 
   const onWheel = (e: React.WheelEvent) =>
     e.ctrlKey || e.metaKey
-      ? zoomTo((z) => z * Math.exp(-e.deltaY / 300), e.clientX, e.clientY)
+      ? flushSync(() => zoomBy(Math.exp(-e.deltaY / 300), e.clientX, e.clientY))
       : setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
 
   const onContextMenu = (e: React.MouseEvent) => {
@@ -398,6 +493,15 @@ export function App() {
 
   const menus = {
     shape: [
+      ...(selected?.type === 'rect'
+        ? [
+            {
+              label: 'Enter',
+              run: () =>
+                enter(selected, centred(selected, fill(selected, Math.max))),
+            },
+          ]
+        : []),
       { label: 'Duplicate', keys: 'Ctrl+D', run: duplicate },
       { label: 'Bring to front', run: () => reorder(true) },
       { label: 'Send to back', run: () => reorder(false) },
@@ -515,11 +619,25 @@ export function App() {
         </button>
       </div>
 
+      {inside && (
+        <nav className="panel crumbs" aria-label="Breadcrumb">
+          {trail.map((s, i) => (
+            <Fragment key={s.id}>
+              <button onClick={() => leaveTo(i)}>
+                {i ? name(trail[i - 1]) : 'Home'}
+              </button>
+              /
+            </Fragment>
+          ))}
+          <span aria-current="page">{name(inside)}</span>
+        </nav>
+      )}
+
       <div className="panel controls">
         <button
           title="Zoom out (Ctrl+-)"
           aria-label="Zoom out"
-          onClick={() => zoomTo((z) => z / 1.2)}
+          onClick={() => zoomBy(1 / 1.2)}
         >
           <Icon d="M4 10h12" />
         </button>
@@ -534,7 +652,7 @@ export function App() {
         <button
           title="Zoom in (Ctrl+=)"
           aria-label="Zoom in"
-          onClick={() => zoomTo((z) => z * 1.2)}
+          onClick={() => zoomBy(1.2)}
         >
           <Icon d="M4 10h12M10 4v12" />
         </button>
@@ -589,6 +707,10 @@ export function App() {
             width: editorBox.w * view.zoom,
             height: editorBox.h * view.zoom,
             fontSize: FONT * view.zoom,
+            ...(edited.children?.length && {
+              alignItems: 'flex-start',
+              paddingTop: 4 * view.zoom,
+            }),
           }}
         >
           <textarea
