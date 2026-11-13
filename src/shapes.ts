@@ -10,9 +10,13 @@ export type Shape = {
   text: string;
   color?: string;
   children?: Shape[];
+  // Arrow ends bound to shapes on the same level.
+  from?: string;
+  to?: string;
 };
 export type Point = { x: number; y: number };
 export type View = Point & { zoom: number };
+export type Box = Point & { w: number; h: number };
 
 export type Colors = { ink: string; accent: string; surface: string };
 const LIGHT = { ink: '#1c1c1a', accent: '', surface: '#fff' };
@@ -20,15 +24,16 @@ const LIGHT = { ink: '#1c1c1a', accent: '', surface: '#fff' };
 export const FONT = 16;
 export const LINE = FONT * 1.25;
 const PAD = 24;
+const GAP = 4;
 
-export const bounds = (s: Shape) => ({
+export const bounds = (s: Box) => ({
   x: Math.min(s.x, s.x + s.w),
   y: Math.min(s.y, s.y + s.h),
   w: Math.abs(s.w),
   h: Math.abs(s.h),
 });
 
-const extent = (shapes: Shape[]) => {
+export const extent = (shapes: Shape[]) => {
   const boxes = shapes.length
     ? shapes.map(bounds)
     : [{ x: 0, y: 0, w: 0, h: 0 }];
@@ -54,6 +59,44 @@ export const frame = (s: Shape) => {
     x: b.x + b.w / 2 - (c.x + c.w / 2) * k,
     y: b.y + top + h / 2 - (c.y + c.h / 2) * k,
   };
+};
+
+// A bound arrow end sits just outside its shape, on the line from the shape's centre to the other end.
+export const connect = (shapes: Shape[]) => {
+  const find = (id?: string) =>
+    shapes.find((s) => s.id === id && s.type !== 'arrow');
+  const centre = (s?: Shape) => {
+    const b = s && bounds(s);
+    return b && { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  };
+  const edge = (s: Shape, p: Point) => {
+    const b = bounds(s);
+    const c = centre(s)!;
+    const dx = p.x - c.x;
+    const dy = p.y - c.y;
+    if (!dx && !dy) return c;
+    const t = Math.min(b.w / 2 / Math.abs(dx), b.h / 2 / Math.abs(dy));
+    const gap = GAP / Math.hypot(dx, dy);
+    return { x: c.x + dx * (t + gap), y: c.y + dy * (t + gap) };
+  };
+  return shapes.map((s) => {
+    if (s.type !== 'arrow' || !(s.from || s.to)) return s;
+    const a = find(s.from);
+    const b = find(s.to);
+    const start = centre(a) ?? { x: s.x, y: s.y };
+    const end = centre(b) ?? { x: s.x + s.w, y: s.y + s.h };
+    const p = a ? edge(a, end) : start;
+    const q = b ? edge(b, start) : end;
+    return {
+      ...s,
+      x: p.x,
+      y: p.y,
+      w: q.x - p.x,
+      h: q.y - p.y,
+      from: a?.id,
+      to: b?.id,
+    };
+  });
 };
 
 // JetBrains Mono glyphs are 0.6em wide.
@@ -159,8 +202,10 @@ export function draw(
   shapes: Shape[],
   view: View,
   colors: Colors,
-  selected?: Shape,
+  selected: Shape[] = [],
   editingId?: string,
+  area?: Box,
+  target?: Shape,
   ratio = devicePixelRatio,
 ) {
   const scale = ratio * view.zoom;
@@ -171,29 +216,41 @@ export function draw(
   ctx.textBaseline = 'middle';
   paint(ctx, shapes, colors.ink, scale, editingId);
 
-  if (!selected) return;
   ctx.strokeStyle = colors.accent;
   ctx.fillStyle = colors.surface;
   ctx.lineWidth = 1.5 / view.zoom;
   ctx.setLineDash([]);
-  if (selected.type === 'text') {
-    const b = bounds(selected);
+  // One selected shape gets resize handles, several or an arrow's snap target get an outline each.
+  const one = selected.length === 1 ? selected[0] : undefined;
+  for (const s of target ? [...selected, target] : selected) {
+    if (s === one && s.type !== 'text') continue;
+    const b = bounds(s);
     ctx.beginPath();
     ctx.roundRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8, 4);
     ctx.stroke();
   }
-  for (const f of handles(selected)) {
-    ctx.beginPath();
-    ctx.arc(
-      selected.x + f.x * selected.w,
-      selected.y + f.y * selected.h,
-      4 / view.zoom,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-    ctx.stroke();
-  }
+  if (one)
+    for (const f of handles(one)) {
+      ctx.beginPath();
+      ctx.arc(
+        one.x + f.x * one.w,
+        one.y + f.y * one.h,
+        4 / view.zoom,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+      ctx.stroke();
+    }
+
+  if (!area) return;
+  const b = bounds(area);
+  ctx.fillStyle = colors.accent;
+  ctx.globalAlpha = 0.08;
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1 / view.zoom;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
 }
 
 export function exportPng(shapes: Shape[]) {
@@ -205,7 +262,17 @@ export function exportPng(shapes: Shape[]) {
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = LIGHT.surface;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  draw(ctx, shapes, { x: -x, y: -y, zoom: 1 }, LIGHT, undefined, undefined, 2);
+  draw(
+    ctx,
+    shapes,
+    { x: -x, y: -y, zoom: 1 },
+    LIGHT,
+    [],
+    undefined,
+    undefined,
+    undefined,
+    2,
+  );
   const a = document.createElement('a');
   a.download = 'infinidraw.png';
   a.href = canvas.toDataURL('image/png');
