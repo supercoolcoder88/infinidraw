@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { App } from './App';
 
@@ -29,6 +35,9 @@ const drawRectangle = () => {
 beforeEach(() => {
   vi.useRealTimers();
   cleanup();
+  vi.useFakeTimers({
+    toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'],
+  });
   localStorage.clear();
   render(<App />);
 });
@@ -354,6 +363,19 @@ it('shows a hint only while the canvas is empty', () => {
   expect(screen.queryByText(/double-click for text/)).toBeNull();
 });
 
+const frames = (ms = 1000) => act(() => vi.advanceTimersByTime(ms));
+const view = () => JSON.parse(localStorage.getItem('infinidraw:view')!);
+const path = () => JSON.parse(localStorage.getItem('infinidraw:path')!);
+const onScreen = (s: { x: number; y: number; w: number; h: number }) => {
+  const v = view();
+  const [x, y] = [v.x + s.x * v.zoom, v.y + s.y * v.zoom];
+  return (
+    x >= 0 && y >= 0 && x + s.w * v.zoom <= 1024 && y + s.h * v.zoom <= 768
+  );
+};
+// key is the shifted digit on AZERTY-like layouts, a symbol on US ones.
+const fit = (digit: string, key = '!') =>
+  fireEvent.keyDown(window, { key, code: `Digit${digit}`, shiftKey: true });
 const zoomInto = (x: number, y: number, deltaY = -900) =>
   fireEvent.wheel(canvas(), { ...at(x, y), deltaY, ctrlKey: true });
 const location = () => screen.queryByLabelText('Breadcrumb')?.textContent;
@@ -394,7 +416,12 @@ it('enters a rectangle from its context menu and stays there after a restart', (
   drawRectangle();
   fireEvent.contextMenu(canvas(), at(200, 150));
   choose('Enter');
+  expect(location()).toBeUndefined();
+  frames(100);
+  expect(location()).toBeUndefined();
+  frames();
   expect(location()).toBe('Home/Untitled');
+  expect(path()).toEqual([saved()[0].id]);
 
   cleanup();
   render(<App />);
@@ -414,8 +441,129 @@ it('jumps back up through nested rectangles from the breadcrumb', () => {
   expect(location()).toBe('Home/api');
   fireEvent.click(screen.getByText('Home'));
   expect(location()).toBeUndefined();
+  const start = view();
+  frames(100);
+  const mid = view();
+  frames();
+  expect(mid.zoom).not.toBe(start.zoom);
+  expect(mid.zoom).not.toBe(view().zoom);
+  expect(view().zoom).toBeCloseTo(Math.min(1024 / 200, 768 / 100) / 2);
   fireEvent.doubleClick(canvas(), at(512, 384));
   expect(screen.getByRole('textbox')).toHaveProperty('value', 'api');
+});
+
+it('frames every shape with Shift+1, animating there', () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([600, 500], [700, 700]);
+  fireEvent.wheel(canvas(), { deltaX: 5000, deltaY: -3000 });
+  const start = view();
+  fit('1');
+  frames(100);
+  const mid = view();
+  frames();
+  const end = view();
+  expect(mid.x).toBeGreaterThan(Math.min(start.x, end.x));
+  expect(mid.x).toBeLessThan(Math.max(start.x, end.x));
+  expect(saved().every(onScreen)).toBe(true);
+});
+
+it('frames only the selection with Shift+2, and nothing without one', () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([900, 600], [1000, 700]);
+  drag([200, 150], [200, 150]);
+  fit('2');
+  frames();
+  expect(view().zoom).toBe(2);
+  expect(onScreen(saved()[0])).toBe(true);
+  expect(onScreen(saved()[1])).toBe(false);
+  fireEvent.keyDown(window, { key: 'Escape' });
+  const before = view();
+  fit('2');
+  frames();
+  expect(view()).toEqual(before);
+});
+
+it('leaves an empty canvas and the tool alone on Shift+1 and Shift+2', () => {
+  const before = view();
+  fit('1', '1');
+  fit('2', '2');
+  frames();
+  expect(view()).toEqual(before);
+  expect(screen.getByLabelText('Select').getAttribute('aria-pressed')).toBe(
+    'true',
+  );
+});
+
+it('stops zooming in at 200% when fitting a tiny shape', () => {
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([100, 100], [110, 108]);
+  fit('1');
+  frames();
+  expect(view().zoom).toBe(2);
+  expect(onScreen(saved()[0])).toBe(true);
+});
+
+it('zooms to fit from the canvas context menu', () => {
+  drawRectangle();
+  fireEvent.wheel(canvas(), { deltaX: 5000 });
+  fireEvent.contextMenu(canvas(), at(500, 500));
+  choose('Zoom to fit');
+  frames();
+  expect(onScreen(saved()[0])).toBe(true);
+});
+
+const panFrom = (start: Partial<PointerEvent>) => {
+  fireEvent.pointerDown(canvas(), { ...at(500, 400), ...start });
+  for (const x of [480, 460, 440]) {
+    frames(16);
+    fireEvent.pointerMove(canvas(), at(x, 400));
+  }
+};
+
+it('keeps gliding after letting go of a moving pan, then comes to rest', () => {
+  panFrom({ button: 1 });
+  fireEvent.pointerUp(canvas(), at(440, 400));
+  const released = view().x;
+  frames(100);
+  expect(view().x).toBeLessThan(released);
+  frames(5000);
+  const rest = view().x;
+  frames();
+  expect(view().x).toBe(rest);
+});
+
+it('does not glide after a pan released while holding still', () => {
+  fireEvent.keyDown(window, { key: ' ' });
+  panFrom({});
+  frames(200);
+  fireEvent.pointerUp(canvas(), at(440, 400));
+  fireEvent.keyUp(window, { key: ' ' });
+  const released = view();
+  frames();
+  expect(view()).toEqual(released);
+});
+
+it('stops a glide or a zoom to fit when the canvas is pressed', () => {
+  panFrom({ button: 1 });
+  fireEvent.pointerUp(canvas(), at(440, 400));
+  frames(50);
+  fireEvent.pointerDown(canvas(), at(10, 10));
+  fireEvent.pointerUp(canvas(), at(10, 10));
+  let stopped = view();
+  frames();
+  expect(view()).toEqual(stopped);
+
+  drawRectangle();
+  fireEvent.wheel(canvas(), { deltaX: 5000 });
+  fit('1');
+  frames(50);
+  fireEvent.pointerDown(canvas(), at(10, 10));
+  fireEvent.pointerUp(canvas(), at(10, 10));
+  stopped = view();
+  frames();
+  expect(view()).toEqual(stopped);
 });
 
 it('saves the drawing to a file and opens it back, undoably', async () => {

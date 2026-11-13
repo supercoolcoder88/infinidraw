@@ -16,6 +16,8 @@ const SHORTCUTS = [
   ['Ctrl+Shift+Z', 'Redo'],
   ['Ctrl+= / Ctrl+-', 'Zoom in / out'],
   ['Ctrl+0', 'Reset zoom'],
+  ['Shift+1', 'Zoom to fit'],
+  ['Shift+2', 'Zoom to selection'],
   ['Zoom into a rectangle', 'Go inside it'],
   ['Escape', 'Deselect'],
   ['?', 'Keyboard shortcuts'],

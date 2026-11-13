@@ -45,6 +45,7 @@ type Drag = {
   area?: Box;
   down: Point;
   guides?: [Point, Point][];
+  moves: (Point & { t: number })[];
 };
 
 const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
@@ -52,7 +53,7 @@ const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
   x: cx - ((cx - v.x) * zoom) / v.zoom,
   y: cy - ((cy - v.y) * zoom) / v.zoom,
 });
-const centred = (s: Shape, zoom: number): View => {
+const centred = (s: Box, zoom: number): View => {
   const b = bounds(s);
   return {
     zoom,
@@ -69,6 +70,12 @@ const covers = (s: Shape, v: View) => {
     (x <= 0 && x + b.w * v.zoom >= innerWidth) ||
     (y <= 0 && y + b.h * v.zoom >= innerHeight)
   );
+};
+// The parent level's view that shows the same as view v inside s.
+const outside = (s: Shape, v: View): View => {
+  const f = frame(s);
+  const zoom = v.zoom / f.k;
+  return { zoom, x: v.x - f.x * zoom, y: v.y - f.y * zoom };
 };
 const nest = (
   level: Shape[],
@@ -137,6 +144,7 @@ export function App() {
   const space = useRef(false);
   const clipboard = useRef<Shape[]>([]);
   const pointer = useRef<{ clientX: number; clientY: number }>(null);
+  const motion = useRef(0);
 
   // The rectangles we are inside, outermost first, and the shapes of the innermost.
   const trail: Shape[] = [];
@@ -246,13 +254,43 @@ export function App() {
   };
   const fill = (s: Shape, pick: (...n: number[]) => number) =>
     pick(innerWidth / (Math.abs(s.w) || 1), innerHeight / (Math.abs(s.h) || 1));
-  const leaveTo = (depth: number) =>
-    go(
-      ids.slice(0, depth),
-      centred(trail[depth], fill(trail[depth], Math.min) / 2),
-    );
+  const leaveTo = (depth: number) => {
+    const from = trail.slice(depth).reduceRight((v, s) => outside(s, v), view);
+    go(ids.slice(0, depth), from);
+    animate(from, centred(trail[depth], fill(trail[depth], Math.min) / 2));
+  };
+  const stop = () => cancelAnimationFrame(motion.current);
+  // Runs step with the elapsed ms on every frame for as long as it returns true.
+  const loop = (step: (ms: number) => boolean | void) => {
+    stop();
+    const start = performance.now();
+    const tick = () => {
+      if (step(performance.now() - start))
+        motion.current = requestAnimationFrame(tick);
+    };
+    motion.current = requestAnimationFrame(tick);
+  };
+  const animate = (from: View, to: View, done?: () => void) =>
+    loop((ms) => {
+      const t = 1 - (1 - Math.min(1, ms / 200)) ** 3;
+      const mix = (a: number, b: number) => a + (b - a) * t;
+      setView({
+        zoom: mix(from.zoom, to.zoom),
+        x: mix(from.x, to.x),
+        y: mix(from.y, to.y),
+      });
+      if (t < 1) return true;
+      done?.();
+    });
+  const fit = (list: Shape[]) => {
+    if (!list.length) return;
+    const b = extent(list, 0);
+    const zoom = Math.min((innerWidth - 80) / b.w, (innerHeight - 80) / b.h);
+    animate(view, centred(b, Math.min(2, Math.max(0.1, zoom))));
+  };
   // Zooming in until a rectangle fills the window goes inside it, zooming back out leaves.
   const zoomBy = (k: number, cx = innerWidth / 2, cy = innerHeight / 2) => {
+    stop();
     const target =
       k > 1
         ? under(toWorld({ clientX: cx, clientY: cy }), 0).find(
@@ -269,15 +307,15 @@ export function App() {
     );
     if (target && covers(target, next)) return enter(target, next);
     if (inside && k < 1) {
-      const f = frame(inside);
-      const zoom = next.zoom / f.k;
-      const outer = { zoom, x: next.x - f.x * zoom, y: next.y - f.y * zoom };
+      const outer = outside(inside, next);
       if (!covers(inside, outer)) return go(ids.slice(0, -1), outer);
     }
     setView(next);
   };
-  const resetZoom = () =>
+  const resetZoom = () => {
+    stop();
     setView(zoomAt(view, 1, innerWidth / 2, innerHeight / 2));
+  };
   const toolCursor = tool === 'select' ? 'default' : 'crosshair';
   const setCursor = (c: string) => (canvas.current!.style.cursor = c);
   const handleAt = (s: Shape, p: Point) =>
@@ -379,6 +417,8 @@ export function App() {
         setHelp(false);
       }
       if (key === '?') setHelp(true);
+      if (e.shiftKey && (e.code === 'Digit1' || e.code === 'Digit2'))
+        return fit(e.code === 'Digit1' ? shapes : selection);
       if (key === 'delete' || key === 'backspace') remove();
       const nudge = NUDGE[key];
       if (nudge && selection.length) {
@@ -420,9 +460,10 @@ export function App() {
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button === 2) return;
+    stop();
     const p = toWorld(e);
     const last = { x: e.clientX, y: e.clientY };
-    const d: Drag = { before: shapes, last, down: last };
+    const d: Drag = { before: shapes, last, down: last, moves: [] };
     if (e.button === 1 || space.current) {
       d.pan = true;
       setCursor('grabbing');
@@ -487,7 +528,10 @@ export function App() {
     const dx = e.clientX - d.last.x;
     const dy = e.clientY - d.last.y;
     d.last = { x: e.clientX, y: e.clientY };
-    if (d.pan) return setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+    if (d.pan) {
+      d.moves.push({ ...d.last, t: performance.now() });
+      return setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+    }
     const p = toWorld(e);
     if (d.area) {
       d.area = { ...d.area, w: p.x - d.area.x, h: p.y - d.area.y };
@@ -545,8 +589,24 @@ export function App() {
   const onPointerUp = () => {
     const d = drag.current;
     drag.current = null;
-    if (d?.pan) setCursor(space.current ? 'grab' : toolCursor);
-    if (!d || d.pan) return;
+    if (d?.pan) {
+      setCursor(space.current ? 'grab' : toolCursor);
+      // Keeps the pan's last ~80ms of speed (px/ms) and lets it decay.
+      const recent = d.moves.filter((m) => performance.now() - m.t < 80);
+      const a = recent[0];
+      const b = recent[recent.length - 1];
+      if (!a || b.t === a.t) return;
+      const vx = (b.x - a.x) / (b.t - a.t);
+      const vy = (b.y - a.y) / (b.t - a.t);
+      const from = view;
+      return loop((ms) => {
+        const left = Math.exp(-ms / 300);
+        const glided = 300 * (1 - left);
+        setView({ ...from, x: from.x + vx * glided, y: from.y + vy * glided });
+        return Math.hypot(vx, vy) * left > 0.01;
+      });
+    }
+    if (!d) return;
     if (d.area) {
       const a = bounds(d.area);
       const within = shapes.filter((s) => {
@@ -593,10 +653,12 @@ export function App() {
     setEditing({ id: s.id, before: shapes });
   };
 
-  const onWheel = (e: React.WheelEvent) =>
-    e.ctrlKey || e.metaKey
-      ? flushSync(() => zoomBy(Math.exp(-e.deltaY / 300), e.clientX, e.clientY))
-      : setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+  const onWheel = (e: React.WheelEvent) => {
+    stop();
+    if (e.ctrlKey || e.metaKey)
+      flushSync(() => zoomBy(Math.exp(-e.deltaY / 300), e.clientX, e.clientY));
+    else setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+  };
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -611,8 +673,10 @@ export function App() {
         ? [
             {
               label: 'Enter',
-              run: () =>
-                enter(selected, centred(selected, fill(selected, Math.max))),
+              run: () => {
+                const to = centred(selected, fill(selected, Math.max));
+                animate(view, to, () => enter(selected, to));
+              },
             },
           ]
         : []),
@@ -635,6 +699,7 @@ export function App() {
         disabled: !future.current.length,
       },
       { label: 'Reset zoom', keys: 'Ctrl+0', run: resetZoom },
+      { label: 'Zoom to fit', keys: 'Shift+1', run: () => fit(shapes) },
     ],
     main: [
       { label: 'Open', keys: 'Ctrl+O', run: open },
