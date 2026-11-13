@@ -62,15 +62,15 @@ it('switches the selected shape between solid and dotted', () => {
   expect(saved()[0].dotted).toBe(false);
 });
 
-it('picks toolbar buttons with the number keys', () => {
+it('picks toolbar buttons with the number keys, but not the stroke style', () => {
   fireEvent.keyDown(window, { key: '5' });
   fireEvent.keyDown(window, { key: '3' });
   drag([50, 50], [150, 50]);
   fireEvent.keyDown(window, { key: '2' });
   drag([200, 200], [300, 300]);
   expect(saved()).toMatchObject([
-    { type: 'arrow', dotted: true },
-    { type: 'rect', dotted: true },
+    { type: 'arrow', dotted: false },
+    { type: 'rect', dotted: false },
   ]);
 });
 

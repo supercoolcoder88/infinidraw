@@ -48,7 +48,7 @@ export const frame = (s: Shape) => {
   const top = s.text ? s.text.split('\n').length * LINE + 8 : 0;
   const h = Math.max(b.h - top, 1);
   const c = extent(s.children ?? []);
-  const k = Math.min((b.w || 1) / Math.max(c.w, 1000), h / c.h);
+  const k = Math.min((b.w || 1) / Math.max(c.w, 2000), h / c.h);
   return {
     k,
     x: b.x + b.w / 2 - (c.x + c.w / 2) * k,
