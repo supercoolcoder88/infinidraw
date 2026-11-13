@@ -37,7 +37,7 @@ const NUDGE: Record<string, [number, number]> = {
 };
 const SHORTCUTS = [
   ['V / R / A', 'Select, rectangle, arrow'],
-  ['1 – 5', 'Toolbar buttons'],
+  ['1 – 3', 'Toolbar buttons'],
   ['Space + drag', 'Pan'],
   ['Double-click', 'Add or edit text'],
   ['Ctrl+D', 'Duplicate'],
@@ -89,13 +89,14 @@ const centred = (s: Shape, zoom: number): View => {
     y: innerHeight / 2 - (b.y + b.h / 2) * zoom,
   };
 };
+// True once both borders on either axis are off-screen.
 const covers = (s: Shape, v: View) => {
   const b = bounds(s);
+  const x = v.x + b.x * v.zoom;
+  const y = v.y + b.y * v.zoom;
   return (
-    v.x + b.x * v.zoom <= 0 &&
-    v.y + b.y * v.zoom <= 0 &&
-    v.x + (b.x + b.w) * v.zoom >= innerWidth &&
-    v.y + (b.y + b.h) * v.zoom >= innerHeight
+    (x <= 0 && x + b.w * v.zoom >= innerWidth) ||
+    (y <= 0 && y + b.h * v.zoom >= innerHeight)
   );
 };
 const nest = (
@@ -359,7 +360,6 @@ export function App() {
         (t, i) => t.key === key || `${i + 1}` === key,
       );
       if (shortcut) setTool(shortcut.tool);
-      if (key === '4' || key === '5') setStroke(key === '5');
     };
     const up = (e: KeyboardEvent) => {
       if (e.key !== ' ') return;
@@ -584,8 +584,7 @@ export function App() {
           <button
             key={String(d)}
             className={PANEL_BUTTON}
-            data-key={d ? 5 : 4}
-            title={d ? 'Dotted (5)' : 'Solid (4)'}
+            title={d ? 'Dotted' : 'Solid'}
             aria-label={d ? 'Dotted' : 'Solid'}
             aria-pressed={(selected ?? { dotted }).dotted === d}
             onClick={() => setStroke(d)}
