@@ -14,7 +14,7 @@ import {
   type View,
 } from './shapes';
 import { flushSync } from 'react-dom';
-import { Icon, Menu } from './Menu';
+import { BUTTON, Icon, ICON, Menu } from './Menu';
 
 const STORAGE_KEY = 'infinidraw:shapes';
 const VIEW_KEY = 'infinidraw:view';
@@ -63,6 +63,10 @@ const TOOLS = [
   { tool: 'arrow', key: 'a', label: 'Arrow', icon: 'M4 16L16 4M8 4h8v8' },
 ] as const;
 type Tool = (typeof TOOLS)[number]['tool'];
+
+const SURFACE = 'fixed rounded-lg border border-border bg-surface shadow-panel';
+const PANEL = `${SURFACE} flex gap-1 p-1`;
+const PANEL_BUTTON = `${BUTTON} relative min-w-8 p-1.5 enabled:active:bg-border aria-pressed:bg-accent-soft aria-pressed:text-accent after:absolute after:right-[3px] after:bottom-px after:text-[8px] after:text-muted after:content-[attr(data-key)]`;
 
 type Drag = {
   before: Shape[];
@@ -539,6 +543,7 @@ export function App() {
     <div onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
       <canvas
         ref={canvas}
+        className="h-screen w-screen bg-[radial-gradient(circle,var(--dot)_1px,transparent_1px)]"
         style={{
           cursor: toolCursor,
           backgroundSize: `${24 * view.zoom}px ${24 * view.zoom}px`,
@@ -551,39 +556,41 @@ export function App() {
       />
 
       {!shapes.length && (
-        <div className="hint">
+        <div className="pointer-events-none fixed inset-0 grid place-items-center text-muted opacity-70">
           R rectangle · A arrow · double-click for text
         </div>
       )}
 
-      <div className="panel toolbar">
+      <div className={`${PANEL} top-3 left-1/2 -translate-x-1/2`}>
         {TOOLS.map((t, i) => (
           <button
             key={t.tool}
+            className={PANEL_BUTTON}
             data-key={i + 1}
             title={`${t.label} (${t.key.toUpperCase()} or ${i + 1})`}
             aria-label={t.label}
             aria-pressed={tool === t.tool}
             onClick={() => setTool(t.tool)}
           >
-            <svg viewBox="0 0 20 20">
+            <svg viewBox="0 0 20 20" className={ICON}>
               <path d={t.icon} />
             </svg>
           </button>
         ))}
       </div>
 
-      <div className="panel sidebar">
+      <div className={`${PANEL} top-1/2 right-3 -translate-y-1/2 flex-col`}>
         {[false, true].map((d) => (
           <button
             key={String(d)}
+            className={PANEL_BUTTON}
             data-key={d ? 5 : 4}
             title={d ? 'Dotted (5)' : 'Solid (4)'}
             aria-label={d ? 'Dotted' : 'Solid'}
             aria-pressed={(selected ?? { dotted }).dotted === d}
             onClick={() => setStroke(d)}
           >
-            <svg viewBox="0 0 20 20">
+            <svg viewBox="0 0 20 20" className={ICON}>
               <path
                 d="M2 10h16"
                 strokeWidth={d ? 2.5 : undefined}
@@ -592,11 +599,11 @@ export function App() {
             </svg>
           </button>
         ))}
-        <hr />
+        <hr className="mx-1 my-0.5 border-border" />
         {COLORS.map((c) => (
           <button
             key={c.label}
-            className="swatch"
+            className={`${PANEL_BUTTON} before:m-auto before:block before:size-3.5 before:rounded-full before:bg-current`}
             style={{ color: c.color ?? 'var(--ink)' }}
             title={c.label}
             aria-label={c.label}
@@ -609,8 +616,9 @@ export function App() {
         ))}
       </div>
 
-      <div className="panel main-menu">
+      <div className={`${PANEL} top-3 left-3`}>
         <button
+          className={PANEL_BUTTON}
           title="Menu"
           aria-label="Menu"
           onClick={() => setMenu({ x: 12, y: 58, kind: 'main' })}
@@ -620,21 +628,33 @@ export function App() {
       </div>
 
       {inside && (
-        <nav className="panel crumbs" aria-label="Breadcrumb">
+        <nav
+          className={`${PANEL} top-3 left-[62px] items-center text-muted`}
+          aria-label="Breadcrumb"
+        >
           {trail.map((s, i) => (
             <Fragment key={s.id}>
-              <button onClick={() => leaveTo(i)}>
+              <button
+                className={`${PANEL_BUTTON} max-w-[20ch] truncate`}
+                onClick={() => leaveTo(i)}
+              >
                 {i ? name(trail[i - 1]) : 'Home'}
               </button>
               /
             </Fragment>
           ))}
-          <span aria-current="page">{name(inside)}</span>
+          <span
+            className="box-content max-w-[20ch] truncate px-1.5 text-ink"
+            aria-current="page"
+          >
+            {name(inside)}
+          </span>
         </nav>
       )}
 
-      <div className="panel controls">
+      <div className={`${PANEL} bottom-3 left-3`}>
         <button
+          className={PANEL_BUTTON}
           title="Zoom out (Ctrl+-)"
           aria-label="Zoom out"
           onClick={() => zoomBy(1 / 1.2)}
@@ -642,7 +662,7 @@ export function App() {
           <Icon d="M4 10h12" />
         </button>
         <button
-          className="zoom"
+          className={`${PANEL_BUTTON} min-w-13`}
           title="Reset zoom (Ctrl+0)"
           aria-label="Reset zoom"
           onClick={resetZoom}
@@ -650,14 +670,16 @@ export function App() {
           {Math.round(view.zoom * 100)}%
         </button>
         <button
+          className={PANEL_BUTTON}
           title="Zoom in (Ctrl+=)"
           aria-label="Zoom in"
           onClick={() => zoomBy(1.2)}
         >
           <Icon d="M4 10h12M10 4v12" />
         </button>
-        <hr />
+        <hr className="mx-0.5 my-1 h-auto border-t-0 border-l border-border" />
         <button
+          className={PANEL_BUTTON}
           title="Undo (Ctrl+Z)"
           aria-label="Undo"
           disabled={!past.current.length}
@@ -666,6 +688,7 @@ export function App() {
           <Icon d="M7 4L3 8l4 4M3 8h8a5 5 0 010 9H8" />
         </button>
         <button
+          className={PANEL_BUTTON}
           title="Redo (Ctrl+Shift+Z)"
           aria-label="Redo"
           disabled={!future.current.length}
@@ -686,12 +709,24 @@ export function App() {
 
       {help && (
         <>
-          <div className="backdrop dim" onPointerDown={() => setHelp(false)} />
-          <dl role="dialog" aria-label="Keyboard shortcuts" className="dialog">
+          <div
+            className="fixed inset-0 animate-[appear_160ms_ease] bg-shade"
+            onPointerDown={() => setHelp(false)}
+          />
+          <dl
+            role="dialog"
+            aria-label="Keyboard shortcuts"
+            className={`${SURFACE} top-1/2 left-1/2 -translate-1/2 animate-appear px-4 py-2`}
+          >
             {SHORTCUTS.map(([keys, what]) => (
-              <div key={keys}>
+              <div
+                key={keys}
+                className="flex h-8 items-center justify-between gap-8"
+              >
                 <dt>{what}</dt>
-                <dd>{keys}</dd>
+                <dd className="rounded-sm bg-hover px-1.5 py-0.5 text-muted">
+                  {keys}
+                </dd>
               </div>
             ))}
           </dl>
@@ -700,7 +735,7 @@ export function App() {
 
       {edited && editorBox && (
         <div
-          className={`editor ${edited.type}`}
+          className={`fixed box-content flex items-center ${edited.type === 'rect' ? 'justify-center text-center' : ''}`}
           style={{
             left: editorBox.x * view.zoom + view.x,
             top: editorBox.y * view.zoom + view.y,
@@ -715,6 +750,7 @@ export function App() {
         >
           <textarea
             autoFocus
+            className="field-sizing-content min-w-[1ch] resize-none overflow-hidden leading-tight whitespace-pre outline-none [text-align:inherit]"
             style={{ color: edited.color }}
             value={edited.text}
             onChange={(e) =>
