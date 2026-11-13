@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useReducer, useRef, useState } from 'react';
 import {
   bounds,
+  connect,
   draw,
   exportPng,
   extent,
@@ -77,6 +78,7 @@ type Drag = {
   handle?: Point;
   ids?: string[];
   area?: Box;
+  down?: Point;
 };
 
 const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
@@ -112,12 +114,26 @@ const nest = (
       )
     : f(level);
 const name = (s: Shape) => s.text.split('\n')[0] || 'Untitled';
-const clone = (s: Shape, dx = 0, dy = 0): Shape => ({
+// Copied arrows stay bound only to shapes copied with them.
+const clone = (shapes: Shape[], dx = 0, dy = 0): Shape[] => {
+  const ids = new Map(shapes.map((s) => [s.id, crypto.randomUUID()]));
+  return shapes.map((s) => ({
+    ...s,
+    id: ids.get(s.id)!,
+    x: s.x + dx,
+    y: s.y + dy,
+    from: s.from && ids.get(s.from),
+    to: s.to && ids.get(s.to),
+    children: s.children && clone(s.children),
+  }));
+};
+// Moving an arrow drops its bindings to shapes that are not moving with it.
+const shift = (s: Shape, dx: number, dy: number, ids: string[]): Shape => ({
   ...s,
-  id: crypto.randomUUID(),
   x: s.x + dx,
   y: s.y + dy,
-  children: s.children?.map((c) => clone(c)),
+  from: ids.find((id) => id === s.from),
+  to: ids.find((id) => id === s.to),
 });
 
 export function App() {
@@ -168,7 +184,7 @@ export function App() {
   const inside = trail.at(-1);
   const setShapes = (next: Shape[] | ((s: Shape[]) => Shape[])) =>
     setRoot((r) =>
-      nest(r, ids, typeof next === 'function' ? next : () => next),
+      nest(r, ids, (s) => connect(typeof next === 'function' ? next(s) : next)),
     );
 
   const selection = shapes.filter((s) => selectedIds.includes(s.id));
@@ -200,7 +216,7 @@ export function App() {
     commit(shapes, [...shapes, ...copies]);
     setSelectedIds(copies.map((s) => s.id));
   };
-  const duplicate = () => add(selection.map((s) => clone(s, 16, 16)));
+  const duplicate = () => add(clone(selection, 16, 16));
   // Pastes with the copied group centred on the pointer, or the window when it never moved.
   const paste = () => {
     if (!clipboard.current.length) return;
@@ -208,11 +224,7 @@ export function App() {
     const p = toWorld(
       pointer.current ?? { clientX: innerWidth / 2, clientY: innerHeight / 2 },
     );
-    add(
-      clipboard.current.map((s) =>
-        clone(s, p.x - b.x - b.w / 2, p.y - b.y - b.h / 2),
-      ),
-    );
+    add(clone(clipboard.current, p.x - b.x - b.w / 2, p.y - b.y - b.h / 2));
   };
   const reorder = (front: boolean) => {
     const rest = shapes.filter((s) => !selection.includes(s));
@@ -304,6 +316,8 @@ export function App() {
       .sort((a, b) => area(a) - area(b));
   };
   const shapeAt = (p: Point) => under(p, 6 / view.zoom)[0];
+  const targetAt = (p: Point) =>
+    under(p, 6 / view.zoom).find((s) => s.type !== 'arrow')?.id;
 
   useEffect(
     () => localStorage.setItem(STORAGE_KEY, JSON.stringify(root)),
@@ -332,6 +346,12 @@ export function App() {
       selection,
       editing?.id,
       drag.current?.area,
+      shapes.find(
+        (s) =>
+          drag.current?.handle &&
+          selected?.type === 'arrow' &&
+          s.id === (drag.current.handle.x ? selected.to : selected.from),
+      ),
     );
   });
 
@@ -380,7 +400,7 @@ export function App() {
           shapes,
           shapes.map((s) =>
             selection.includes(s)
-              ? { ...s, x: s.x + nudge[0] * k, y: s.y + nudge[1] * k }
+              ? shift(s, nudge[0] * k, nudge[1] * k, selectedIds)
               : s,
           ),
         );
@@ -421,11 +441,13 @@ export function App() {
         dotted,
         text: '',
         color,
+        from: tool === 'arrow' ? targetAt(p) : undefined,
       };
       setShapes([...shapes, s]);
       setSelectedIds([s.id]);
       d.id = s.id;
       d.handle = { x: 1, y: 1 };
+      d.down = d.last;
     } else if (!e.shiftKey && selected && handleAt(selected, p)) {
       d.handle = handleAt(selected, p);
       d.id = selected.id;
@@ -481,7 +503,7 @@ export function App() {
     setShapes((all) =>
       all.map((s) => {
         if (d.ids?.includes(s.id))
-          return { ...s, x: s.x + dx / view.zoom, y: s.y + dy / view.zoom };
+          return shift(s, dx / view.zoom, dy / view.zoom, d.ids);
         if (s.id !== d.id || !f) return s;
         return {
           ...s,
@@ -489,6 +511,12 @@ export function App() {
           y: f.y ? s.y : p.y,
           w: f.x ? p.x - s.x : s.x + s.w - p.x,
           h: f.y ? p.y - s.y : s.y + s.h - p.y,
+          // An end binds to the shape under it unless the other end already has it.
+          ...(s.type === 'arrow' && {
+            [f.x ? 'to' : 'from']: [targetAt(p)].find(
+              (t) => t !== (f.x ? s.from : s.to),
+            ),
+          }),
         };
       }),
     );
@@ -517,8 +545,8 @@ export function App() {
     if (tool !== 'select') {
       setTool('select');
       const drawn = shapes.find((s) => s.id === d.id);
-      if (!drawn || Math.hypot(drawn.w, drawn.h) < 4)
-        return setShapes(d.before);
+      const moved = Math.hypot(d.last.x - d.down!.x, d.last.y - d.down!.y);
+      if (!drawn || moved < 4 * view.zoom) return setShapes(d.before);
     }
     commit(d.before, shapes);
   };

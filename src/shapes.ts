@@ -10,6 +10,9 @@ export type Shape = {
   text: string;
   color?: string;
   children?: Shape[];
+  // Arrow ends bound to shapes on the same level.
+  from?: string;
+  to?: string;
 };
 export type Point = { x: number; y: number };
 export type View = Point & { zoom: number };
@@ -21,6 +24,7 @@ const LIGHT = { ink: '#1c1c1a', accent: '', surface: '#fff' };
 export const FONT = 16;
 export const LINE = FONT * 1.25;
 const PAD = 24;
+const GAP = 4;
 
 export const bounds = (s: Box) => ({
   x: Math.min(s.x, s.x + s.w),
@@ -55,6 +59,44 @@ export const frame = (s: Shape) => {
     x: b.x + b.w / 2 - (c.x + c.w / 2) * k,
     y: b.y + top + h / 2 - (c.y + c.h / 2) * k,
   };
+};
+
+// A bound arrow end sits just outside its shape, on the line from the shape's centre to the other end.
+export const connect = (shapes: Shape[]) => {
+  const find = (id?: string) =>
+    shapes.find((s) => s.id === id && s.type !== 'arrow');
+  const centre = (s?: Shape) => {
+    const b = s && bounds(s);
+    return b && { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  };
+  const edge = (s: Shape, p: Point) => {
+    const b = bounds(s);
+    const c = centre(s)!;
+    const dx = p.x - c.x;
+    const dy = p.y - c.y;
+    if (!dx && !dy) return c;
+    const t = Math.min(b.w / 2 / Math.abs(dx), b.h / 2 / Math.abs(dy));
+    const gap = GAP / Math.hypot(dx, dy);
+    return { x: c.x + dx * (t + gap), y: c.y + dy * (t + gap) };
+  };
+  return shapes.map((s) => {
+    if (s.type !== 'arrow' || !(s.from || s.to)) return s;
+    const a = find(s.from);
+    const b = find(s.to);
+    const start = centre(a) ?? { x: s.x, y: s.y };
+    const end = centre(b) ?? { x: s.x + s.w, y: s.y + s.h };
+    const p = a ? edge(a, end) : start;
+    const q = b ? edge(b, start) : end;
+    return {
+      ...s,
+      x: p.x,
+      y: p.y,
+      w: q.x - p.x,
+      h: q.y - p.y,
+      from: a?.id,
+      to: b?.id,
+    };
+  });
 };
 
 // JetBrains Mono glyphs are 0.6em wide.
@@ -163,6 +205,7 @@ export function draw(
   selected: Shape[] = [],
   editingId?: string,
   area?: Box,
+  target?: Shape,
   ratio = devicePixelRatio,
 ) {
   const scale = ratio * view.zoom;
@@ -177,10 +220,10 @@ export function draw(
   ctx.fillStyle = colors.surface;
   ctx.lineWidth = 1.5 / view.zoom;
   ctx.setLineDash([]);
-  // One selected shape gets resize handles, several get an outline each.
+  // One selected shape gets resize handles, several or an arrow's snap target get an outline each.
   const one = selected.length === 1 ? selected[0] : undefined;
-  for (const s of selected) {
-    if (one && s.type !== 'text') continue;
+  for (const s of target ? [...selected, target] : selected) {
+    if (s === one && s.type !== 'text') continue;
     const b = bounds(s);
     ctx.beginPath();
     ctx.roundRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8, 4);
@@ -225,6 +268,7 @@ export function exportPng(shapes: Shape[]) {
     { x: -x, y: -y, zoom: 1 },
     LIGHT,
     [],
+    undefined,
     undefined,
     undefined,
     2,
