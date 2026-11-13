@@ -1,4 +1,5 @@
-import { app, BrowserWindow, Menu } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu } from 'electron';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 
@@ -9,6 +10,19 @@ if (started) {
 
 // The default menu's zoom accelerators would scale the page on top of the canvas zoom.
 Menu.setApplicationMenu(null);
+
+const filters = [{ name: 'Infinidraw', extensions: ['infinidraw'] }];
+ipcMain.handle('save', async (_, text: string) => {
+  const { filePath } = await dialog.showSaveDialog({
+    defaultPath: 'untitled.infinidraw',
+    filters,
+  });
+  if (filePath) await writeFile(filePath, text);
+});
+ipcMain.handle('open', async () => {
+  const { filePaths } = await dialog.showOpenDialog({ filters });
+  return filePaths[0] && readFile(filePaths[0], 'utf8');
+});
 
 const createWindow = () => {
   // Create the browser window.

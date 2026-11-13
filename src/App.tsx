@@ -1,15 +1,15 @@
-import { Fragment, useEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   bounds,
   connect,
   draw,
   exportPng,
   extent,
-  FONT,
   frame,
   handles,
   hit,
   LINE,
+  snap,
   textSize,
   type Box,
   type Point,
@@ -17,63 +17,24 @@ import {
   type View,
 } from './shapes';
 import { flushSync } from 'react-dom';
-import { BUTTON, Icon, ICON, Menu } from './Menu';
+import { Breadcrumbs } from './Breadcrumbs';
+import { Controls } from './Controls';
+import { Icon, Menu, PANEL, PANEL_BUTTON } from './Menu';
+import { ShortcutsDialog } from './ShortcutsDialog';
+import { StylePanel } from './StylePanel';
+import { TextEditor } from './TextEditor';
+import { Toolbar, TOOLS, type Tool } from './Toolbar';
 
 const STORAGE_KEY = 'infinidraw:shapes';
 const VIEW_KEY = 'infinidraw:view';
 const PATH_KEY = 'infinidraw:path';
 const THEME_KEY = 'infinidraw:theme';
-// Mid-tones that read on both the light and dark canvas; no colour means theme ink.
-const COLORS = [
-  { label: 'Ink' },
-  { label: 'Red', color: '#e5484d' },
-  { label: 'Orange', color: '#e8890c' },
-  { label: 'Green', color: '#30a46c' },
-  { label: 'Blue', color: '#3b82f6' },
-  { label: 'Purple', color: '#9b6ef3' },
-];
 const NUDGE: Record<string, [number, number]> = {
   arrowleft: [-1, 0],
   arrowright: [1, 0],
   arrowup: [0, -1],
   arrowdown: [0, 1],
 };
-const SHORTCUTS = [
-  ['V / R / A', 'Select, rectangle, arrow'],
-  ['1 – 3', 'Toolbar buttons'],
-  ['Space + drag', 'Pan'],
-  ['Double-click', 'Add or edit text'],
-  ['Shift+click', 'Add to selection'],
-  ['Drag on canvas', 'Select area'],
-  ['Ctrl+C / Ctrl+V', 'Copy / paste'],
-  ['Ctrl+D', 'Duplicate'],
-  ['Delete', 'Delete'],
-  ['Arrows', 'Nudge 1px, 10px with Shift'],
-  ['Ctrl+Z', 'Undo'],
-  ['Ctrl+Shift+Z', 'Redo'],
-  ['Ctrl+= / Ctrl+-', 'Zoom in / out'],
-  ['Ctrl+0', 'Reset zoom'],
-  ['Zoom into a rectangle', 'Go inside it'],
-  ['Escape', 'Deselect'],
-  ['?', 'Keyboard shortcuts'],
-];
-
-const TOOLS = [
-  {
-    tool: 'select',
-    key: 'v',
-    label: 'Select',
-    icon: 'M5 3l10 6-4.5 1.5L9 15z',
-  },
-  { tool: 'rect', key: 'r', label: 'Rectangle', icon: 'M3 5h14v10H3z' },
-  { tool: 'arrow', key: 'a', label: 'Arrow', icon: 'M4 16L16 4M8 4h8v8' },
-] as const;
-type Tool = (typeof TOOLS)[number]['tool'];
-
-const SURFACE = 'fixed rounded-lg border border-border bg-surface shadow-panel';
-const PANEL = `${SURFACE} flex gap-1 p-1`;
-const PANEL_BUTTON = `${BUTTON} relative min-w-8 p-1.5 enabled:active:bg-border aria-pressed:bg-accent-soft aria-pressed:text-accent after:absolute after:right-[3px] after:bottom-px after:text-[8px] after:text-muted after:content-[attr(data-key)]`;
-
 type Drag = {
   before: Shape[];
   last: Point;
@@ -83,6 +44,7 @@ type Drag = {
   ids?: string[];
   area?: Box;
   down: Point;
+  guides?: [Point, Point][];
 };
 
 const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
@@ -118,7 +80,6 @@ const nest = (
         s.id === id ? { ...s, children: nest(s.children ?? [], rest, f) } : s,
       )
     : f(level);
-const name = (s: Shape) => s.text.split('\n')[0] || 'Untitled';
 // Copied arrows stay bound only to shapes copied with them.
 const clone = (shapes: Shape[], dx = 0, dy = 0): Shape[] => {
   const ids = new Map(shapes.map((s) => [s.id, crypto.randomUUID()]));
@@ -253,6 +214,20 @@ export function App() {
     commit(shapes, []);
     setSelectedIds([]);
   };
+  const save = () =>
+    files.save(
+      JSON.stringify({ type: 'infinidraw', version: 1, shapes: root }),
+    );
+  const open = async () => {
+    const text = await files.open();
+    if (!text) return;
+    const file = JSON.parse(text);
+    if (file.type !== 'infinidraw') return alert('Not an infinidraw file');
+    past.current.push(root);
+    future.current = [];
+    setRoot(file.shapes);
+    go([], { x: 0, y: 0, zoom: 1 });
+  };
   const go = (to: string[], v: View) => {
     setPath(to);
     setView(v);
@@ -321,8 +296,10 @@ export function App() {
       .sort((a, b) => area(a) - area(b));
   };
   const shapeAt = (p: Point) => under(p, 6 / view.zoom)[0];
-  const targetAt = (p: Point) =>
-    under(p, 6 / view.zoom).find((s) => s.type !== 'arrow')?.id;
+  const targetAt = (p: Point, alt?: boolean) =>
+    alt
+      ? undefined
+      : under(p, 6 / view.zoom).find((s) => s.type !== 'arrow')?.id;
 
   useEffect(
     () => localStorage.setItem(STORAGE_KEY, JSON.stringify(root)),
@@ -357,6 +334,7 @@ export function App() {
           selected?.type === 'arrow' &&
           s.id === (drag.current.handle.x ? selected.to : selected.from),
       ),
+      drag.current?.guides,
     );
   });
 
@@ -374,6 +352,8 @@ export function App() {
         if (key === 'y' || (key === 'z' && e.shiftKey)) redo();
         else if (key === 'z') undo();
         else if (key === 'd') duplicate();
+        else if (key === 's') save();
+        else if (key === 'o') open();
         else if (key === 'c') {
           if (selection.length) clipboard.current = selection;
         } else if (key === 'v') paste();
@@ -446,7 +426,7 @@ export function App() {
         dotted,
         text: '',
         color,
-        from: tool === 'arrow' ? targetAt(p) : undefined,
+        from: tool === 'arrow' ? targetAt(p, e.altKey) : undefined,
       };
       setShapes([...shapes, s]);
       setSelectedIds([s.id]);
@@ -504,10 +484,36 @@ export function App() {
       return redraw();
     }
     const f = d.handle;
+    if (d.ids) {
+      const box = extent(
+        d.before.filter((s) => d.ids!.includes(s.id)),
+        0,
+      );
+      const others = d.before.filter(
+        (s) => s.type !== 'arrow' && !d.ids!.includes(s.id),
+      );
+      const off = {
+        x: (e.clientX - d.down.x) / view.zoom,
+        y: (e.clientY - d.down.y) / view.zoom,
+      };
+      const n = e.altKey
+        ? { x: 0, y: 0, guides: [] }
+        : snap(
+            { ...box, x: box.x + off.x, y: box.y + off.y },
+            others,
+            6 / view.zoom,
+          );
+      d.guides = n.guides;
+      return setShapes(
+        d.before.map((s) =>
+          d.ids!.includes(s.id)
+            ? shift(s, off.x + n.x, off.y + n.y, d.ids!)
+            : s,
+        ),
+      );
+    }
     setShapes((all) =>
       all.map((s) => {
-        if (d.ids?.includes(s.id))
-          return shift(s, dx / view.zoom, dy / view.zoom, d.ids);
         if (s.id !== d.id || !f) return s;
         return {
           ...s,
@@ -517,7 +523,7 @@ export function App() {
           h: f.y ? p.y - s.y : s.y + s.h - p.y,
           // An end binds to the shape under it unless the other end already has it.
           ...(s.type === 'arrow' && {
-            [f.x ? 'to' : 'from']: [targetAt(p)].find(
+            [f.x ? 'to' : 'from']: [targetAt(p, e.altKey)].find(
               (t) => t !== (f.x ? s.from : s.to),
             ),
           }),
@@ -621,6 +627,8 @@ export function App() {
       { label: 'Reset zoom', keys: 'Ctrl+0', run: resetZoom },
     ],
     main: [
+      { label: 'Open', keys: 'Ctrl+O', run: open },
+      { label: 'Save', keys: 'Ctrl+S', run: save },
       { label: 'Export as PNG', run: () => exportPng(shapes) },
       {
         label: theme === 'dark' ? 'Light mode' : 'Dark mode',
@@ -630,8 +638,6 @@ export function App() {
       { label: 'Clear canvas', run: clear, separator: true },
     ],
   };
-
-  const editorBox = edited && bounds(edited);
 
   return (
     <div onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
@@ -655,59 +661,18 @@ export function App() {
         </div>
       )}
 
-      <div className={`${PANEL} top-3 left-1/2 -translate-x-1/2`}>
-        {TOOLS.map((t, i) => (
-          <button
-            key={t.tool}
-            className={PANEL_BUTTON}
-            data-key={i + 1}
-            title={`${t.label} (${t.key.toUpperCase()} or ${i + 1})`}
-            aria-label={t.label}
-            aria-pressed={tool === t.tool}
-            onClick={() => setTool(t.tool)}
-          >
-            <svg viewBox="0 0 20 20" className={ICON}>
-              <path d={t.icon} />
-            </svg>
-          </button>
-        ))}
-      </div>
+      <Toolbar tool={tool} onTool={setTool} />
 
-      <div className={`${PANEL} top-1/2 right-3 -translate-y-1/2 flex-col`}>
-        {[false, true].map((d) => (
-          <button
-            key={String(d)}
-            className={PANEL_BUTTON}
-            title={d ? 'Dotted' : 'Solid'}
-            aria-label={d ? 'Dotted' : 'Solid'}
-            aria-pressed={(selection[0] ?? { dotted }).dotted === d}
-            onClick={() => setStroke(d)}
-          >
-            <svg viewBox="0 0 20 20" className={ICON}>
-              <path
-                d="M2 10h16"
-                strokeWidth={d ? 2.5 : undefined}
-                strokeDasharray={d ? '0 4' : undefined}
-              />
-            </svg>
-          </button>
-        ))}
-        <hr className="mx-1 my-0.5 border-border" />
-        {COLORS.map((c) => (
-          <button
-            key={c.label}
-            className={`${PANEL_BUTTON} before:m-auto before:block before:size-3.5 before:rounded-full before:bg-current`}
-            style={{ color: c.color ?? 'var(--ink)' }}
-            title={c.label}
-            aria-label={c.label}
-            aria-pressed={(selection[0] ?? { color }).color === c.color}
-            onClick={() => {
-              setColor(c.color);
-              restyle({ color: c.color });
-            }}
-          />
-        ))}
-      </div>
+      <StylePanel
+        dotted={dotted}
+        color={color}
+        selected={selection[0]}
+        onStroke={setStroke}
+        onColor={(c) => {
+          setColor(c);
+          restyle({ color: c });
+        }}
+      />
 
       <div className={`${PANEL} top-3 left-3`}>
         <button
@@ -720,76 +685,17 @@ export function App() {
         </button>
       </div>
 
-      {inside && (
-        <nav
-          className={`${PANEL} top-3 left-[62px] items-center text-muted`}
-          aria-label="Breadcrumb"
-        >
-          {trail.map((s, i) => (
-            <Fragment key={s.id}>
-              <button
-                className={`${PANEL_BUTTON} max-w-[20ch] truncate`}
-                onClick={() => leaveTo(i)}
-              >
-                {i ? name(trail[i - 1]) : 'Home'}
-              </button>
-              /
-            </Fragment>
-          ))}
-          <span
-            className="box-content max-w-[20ch] truncate px-1.5 text-ink"
-            aria-current="page"
-          >
-            {name(inside)}
-          </span>
-        </nav>
-      )}
+      {inside && <Breadcrumbs trail={trail} onLeave={leaveTo} />}
 
-      <div className={`${PANEL} bottom-3 left-3`}>
-        <button
-          className={PANEL_BUTTON}
-          title="Zoom out (Ctrl+-)"
-          aria-label="Zoom out"
-          onClick={() => zoomBy(1 / 1.2)}
-        >
-          <Icon d="M4 10h12" />
-        </button>
-        <button
-          className={`${PANEL_BUTTON} min-w-13`}
-          title="Reset zoom (Ctrl+0)"
-          aria-label="Reset zoom"
-          onClick={resetZoom}
-        >
-          {Math.round(view.zoom * 100)}%
-        </button>
-        <button
-          className={PANEL_BUTTON}
-          title="Zoom in (Ctrl+=)"
-          aria-label="Zoom in"
-          onClick={() => zoomBy(1.2)}
-        >
-          <Icon d="M4 10h12M10 4v12" />
-        </button>
-        <hr className="mx-0.5 my-1 h-auto border-t-0 border-l border-border" />
-        <button
-          className={PANEL_BUTTON}
-          title="Undo (Ctrl+Z)"
-          aria-label="Undo"
-          disabled={!past.current.length}
-          onClick={undo}
-        >
-          <Icon d="M7 4L3 8l4 4M3 8h8a5 5 0 010 9H8" />
-        </button>
-        <button
-          className={PANEL_BUTTON}
-          title="Redo (Ctrl+Shift+Z)"
-          aria-label="Redo"
-          disabled={!future.current.length}
-          onClick={redo}
-        >
-          <Icon d="M13 4l4 4-4 4M17 8H9a5 5 0 000 9h3" />
-        </button>
-      </div>
+      <Controls
+        zoom={view.zoom}
+        canUndo={!!past.current.length}
+        canRedo={!!future.current.length}
+        onZoom={(k) => zoomBy(k)}
+        onResetZoom={resetZoom}
+        onUndo={undo}
+        onRedo={redo}
+      />
 
       {menu && (
         <Menu
@@ -800,75 +706,29 @@ export function App() {
         />
       )}
 
-      {help && (
-        <>
-          <div
-            className="fixed inset-0 animate-[appear_160ms_ease] bg-shade"
-            onPointerDown={() => setHelp(false)}
-          />
-          <dl
-            role="dialog"
-            aria-label="Keyboard shortcuts"
-            className={`${SURFACE} top-1/2 left-1/2 -translate-1/2 animate-appear px-4 py-2`}
-          >
-            {SHORTCUTS.map(([keys, what]) => (
-              <div
-                key={keys}
-                className="flex h-8 items-center justify-between gap-8"
-              >
-                <dt>{what}</dt>
-                <dd className="rounded-sm bg-hover px-1.5 py-0.5 text-muted">
-                  {keys}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </>
-      )}
+      {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
 
-      {edited && editorBox && (
-        <div
-          className={`fixed box-content flex items-center ${edited.type === 'rect' ? 'justify-center text-center' : ''}`}
-          style={{
-            left: editorBox.x * view.zoom + view.x,
-            top: editorBox.y * view.zoom + view.y,
-            width: editorBox.w * view.zoom,
-            height: editorBox.h * view.zoom,
-            fontSize: FONT * view.zoom,
-            ...(edited.children?.length && {
-              alignItems: 'flex-start',
-              paddingTop: 4 * view.zoom,
-            }),
+      {edited && (
+        <TextEditor
+          shape={edited}
+          view={view}
+          onChange={(text) =>
+            setShapes(
+              shapes.map((s) =>
+                s === edited
+                  ? { ...s, text, ...(s.type === 'text' && textSize(text)) }
+                  : s,
+              ),
+            )
+          }
+          onDone={() => {
+            setEditing(undefined);
+            commit(
+              editing!.before,
+              shapes.filter((s) => s.type !== 'text' || s.text.trim()),
+            );
           }}
-        >
-          <textarea
-            autoFocus
-            className="field-sizing-content min-w-[1ch] resize-none overflow-hidden leading-tight whitespace-pre outline-none [text-align:inherit]"
-            style={{ color: edited.color }}
-            value={edited.text}
-            onChange={(e) =>
-              setShapes(
-                shapes.map((s) =>
-                  s === edited
-                    ? {
-                        ...s,
-                        text: e.target.value,
-                        ...(s.type === 'text' && textSize(e.target.value)),
-                      }
-                    : s,
-                ),
-              )
-            }
-            onKeyDown={(e) => e.key === 'Escape' && e.currentTarget.blur()}
-            onBlur={() => {
-              setEditing(undefined);
-              commit(
-                editing!.before,
-                shapes.filter((s) => s.type !== 'text' || s.text.trim()),
-              );
-            }}
-          />
-        </div>
+        />
       )}
     </div>
   );

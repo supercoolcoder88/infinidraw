@@ -33,17 +33,17 @@ export const bounds = (s: Box) => ({
   h: Math.abs(s.h),
 });
 
-export const extent = (shapes: Shape[]) => {
+export const extent = (shapes: Shape[], pad = PAD) => {
   const boxes = shapes.length
     ? shapes.map(bounds)
     : [{ x: 0, y: 0, w: 0, h: 0 }];
-  const x = Math.min(...boxes.map((b) => b.x)) - PAD;
-  const y = Math.min(...boxes.map((b) => b.y)) - PAD;
+  const x = Math.min(...boxes.map((b) => b.x)) - pad;
+  const y = Math.min(...boxes.map((b) => b.y)) - pad;
   return {
     x,
     y,
-    w: Math.max(...boxes.map((b) => b.x + b.w)) + PAD - x,
-    h: Math.max(...boxes.map((b) => b.y + b.h)) + PAD - y,
+    w: Math.max(...boxes.map((b) => b.x + b.w)) + pad - x,
+    h: Math.max(...boxes.map((b) => b.y + b.h)) + pad - y,
   };
 };
 
@@ -61,7 +61,7 @@ export const frame = (s: Shape) => {
   };
 };
 
-// A bound arrow end sits just outside its shape, on the line from the shape's centre to the other end.
+// A bound arrow end sits just outside the middle of its shape's side that faces the other end.
 export const connect = (shapes: Shape[]) => {
   const find = (id?: string) =>
     shapes.find((s) => s.id === id && s.type !== 'arrow');
@@ -74,10 +74,9 @@ export const connect = (shapes: Shape[]) => {
     const c = centre(s)!;
     const dx = p.x - c.x;
     const dy = p.y - c.y;
-    if (!dx && !dy) return c;
-    const t = Math.min(b.w / 2 / Math.abs(dx), b.h / 2 / Math.abs(dy));
-    const gap = GAP / Math.hypot(dx, dy);
-    return { x: c.x + dx * (t + gap), y: c.y + dy * (t + gap) };
+    return Math.abs(dx) * b.h > Math.abs(dy) * b.w
+      ? { x: c.x + Math.sign(dx) * (b.w / 2 + GAP), y: c.y }
+      : { x: c.x, y: c.y + (dy < 0 ? -1 : 1) * (b.h / 2 + GAP) };
   };
   return shapes.map((s) => {
     if (s.type !== 'arrow' || !(s.from || s.to)) return s;
@@ -97,6 +96,27 @@ export const connect = (shapes: Shape[]) => {
       to: b?.id,
     };
   });
+};
+
+// Nudges a box so its centre lines up with another box's centre within reach, with a guide joining each match.
+export const snap = (box: Box, others: Box[], reach: number) => {
+  const mid = (s: Box) => {
+    const b = bounds(s);
+    return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  };
+  const c = mid(box);
+  const centres = others.map(mid);
+  const nudge = (axis: 'x' | 'y') =>
+    centres
+      .map((o) => o[axis] - c[axis])
+      .filter((d) => Math.abs(d) <= reach)
+      .sort((a, b) => Math.abs(a) - Math.abs(b))[0] ?? 0;
+  const d = { x: nudge('x'), y: nudge('y') };
+  const at = { x: c.x + d.x, y: c.y + d.y };
+  const guides = centres
+    .filter((o) => Math.abs(o.x - at.x) < 0.01 || Math.abs(o.y - at.y) < 0.01)
+    .map((o): [Point, Point] => [at, o]);
+  return { ...d, guides };
 };
 
 // JetBrains Mono glyphs are 0.6em wide.
@@ -206,6 +226,7 @@ export function draw(
   editingId?: string,
   area?: Box,
   target?: Shape,
+  guides: [Point, Point][] = [],
   ratio = devicePixelRatio,
 ) {
   const scale = ratio * view.zoom;
@@ -243,13 +264,20 @@ export function draw(
       ctx.stroke();
     }
 
+  ctx.lineWidth = 1 / view.zoom;
+  ctx.beginPath();
+  for (const [a, b] of guides) {
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+  }
+  ctx.stroke();
+
   if (!area) return;
   const b = bounds(area);
   ctx.fillStyle = colors.accent;
   ctx.globalAlpha = 0.08;
   ctx.fillRect(b.x, b.y, b.w, b.h);
   ctx.globalAlpha = 1;
-  ctx.lineWidth = 1 / view.zoom;
   ctx.strokeRect(b.x, b.y, b.w, b.h);
 }
 
@@ -268,6 +296,7 @@ export function exportPng(shapes: Shape[]) {
     { x: -x, y: -y, zoom: 1 },
     LIGHT,
     [],
+    undefined,
     undefined,
     undefined,
     undefined,

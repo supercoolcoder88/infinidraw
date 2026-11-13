@@ -13,6 +13,11 @@ export const BUTTON =
 export const ICON =
   'fill-none stroke-current stroke-[1.5] [stroke-linecap:round] [stroke-linejoin:round]';
 
+export const SURFACE =
+  'fixed rounded-lg border border-border bg-surface shadow-panel';
+export const PANEL = `${SURFACE} flex gap-1 p-1`;
+export const PANEL_BUTTON = `${BUTTON} relative min-w-8 p-1.5 enabled:active:bg-border aria-pressed:bg-accent-soft aria-pressed:text-accent after:absolute after:right-[3px] after:bottom-px after:text-[8px] after:text-muted after:content-[attr(data-key)]`;
+
 export const Icon = ({ d }: { d: string }) => (
   <svg viewBox="0 0 20 20" className={ICON}>
     <path d={d} />

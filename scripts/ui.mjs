@@ -16,6 +16,88 @@ const stateFile = path.join(dir, 'state.json');
 const [cmd, ...args] = process.argv.slice(2);
 const state = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const skill = path.join(root, '.claude/skills/ui-review');
+const scene = JSON.parse(
+  fs.readFileSync(path.join(skill, 'scene.json'), 'utf8'),
+);
+const light = JSON.stringify({ ...scene, 'infinidraw:theme': 'light' });
+
+// Each snapshot is a list of commands run from a fresh reset, at 1280x800.
+const SNAPSHOTS = {
+  empty: [['reset', '{"infinidraw:theme":"light"}']],
+  scene: [['reset', light]],
+  selected: [
+    ['reset', light],
+    ['click', '380,320'],
+  ],
+  'shape-menu': [
+    ['reset', light],
+    ['rightclick', '380,320'],
+  ],
+  'main-menu': [
+    ['reset', light],
+    ['click', '[aria-label=Menu]'],
+  ],
+  shortcuts: [
+    ['reset', light],
+    ['key', '?'],
+  ],
+  editing: [
+    ['reset', light],
+    ['dblclick', '890,320'],
+    ['type', ' app'],
+  ],
+  inside: [
+    ['reset', light],
+    ['rightclick', '380,320'],
+    ['click', 'text=Enter'],
+  ],
+  dark: [
+    ['reset', JSON.stringify({ ...scene, 'infinidraw:theme': 'dark' })],
+    ['click', '380,320'],
+  ],
+  'multi-selected': [
+    ['reset', light],
+    ['drag', '150,240', '1060,580'],
+  ],
+  'bound-arrow': [
+    ['reset', light],
+    ['key', 'a'],
+    ['drag', '890,320', '300,520'],
+    ['key', 'Escape'],
+    ['drag', '230,520', '330,680'],
+  ],
+};
+
+// Decodes both PNGs in the page and returns the changed pixel count and a diff image.
+const compare = (a, b) => `(async () => {
+  const load = async (b64) => {
+    const img = new Image();
+    img.src = 'data:image/png;base64,' + b64;
+    await img.decode();
+    const ctx = new OffscreenCanvas(img.width, img.height).getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, img.width, img.height);
+  };
+  const [a, b] = await Promise.all([load('${a}'), load('${b}')]);
+  if (a.width !== b.width || a.height !== b.height) return { changed: a.width * a.height };
+  let changed = 0;
+  for (let i = 0; i < a.data.length; i += 4) {
+    const hit = [0, 1, 2, 3].some((c) => Math.abs(a.data[i + c] - b.data[i + c]) > 16);
+    changed += hit;
+    b.data.set(hit ? [255, 0, 0, 255] : [b.data[i], b.data[i + 1], b.data[i + 2], 40], i);
+  }
+  if (!changed) return { changed };
+  const out = new OffscreenCanvas(b.width, b.height);
+  out.getContext('2d').putImageData(b, 0, 0);
+  const blob = await out.convertToBlob();
+  const url = await new Promise((r) => {
+    const f = new FileReader();
+    f.onload = () => r(f.result);
+    f.readAsDataURL(blob);
+  });
+  return { changed, diff: url.split(',')[1] };
+})()`;
 
 async function connect() {
   const { port, width, height } = state();
@@ -93,13 +175,15 @@ const mouse = (app, type, { x, y }, extra = {}) =>
 const locate = (app, target) =>
   /^\d+,\d+$/.test(target) ? point(target) : app.evaluate(find(target));
 
-async function press(target, button = 'left', clicks = 1) {
+const shift = (m) => (m === 'Shift' ? 8 : 0);
+
+async function press(target, button = 'left', clicks = 1, modifiers = 0) {
   const app = await connect();
   const at = await locate(app, target);
   await mouse(app, 'mouseMoved', at, { button: 'none' });
   for (let clickCount = 1; clickCount <= clicks; clickCount++) {
-    await mouse(app, 'mousePressed', at, { button, clickCount });
-    await mouse(app, 'mouseReleased', at, { button, clickCount });
+    await mouse(app, 'mousePressed', at, { button, clickCount, modifiers });
+    await mouse(app, 'mouseReleased', at, { button, clickCount, modifiers });
   }
 }
 
@@ -170,7 +254,6 @@ const commands = {
       return performance.timeOrigin;
     })()`);
     await settle(origin);
-    console.log('reset');
   },
 
   async stop() {
@@ -195,13 +278,58 @@ const commands = {
     console.log(file);
   },
 
+  async snapshots(...names) {
+    const update = names.includes('--update');
+    names = names.filter((n) => n !== '--update');
+    const { width, height } = state();
+    if (`${width}x${height}` !== '1280x800')
+      throw new Error('Snapshots need a 1280x800 instance');
+    for (const name of names.length ? names : Object.keys(SNAPSHOTS)) {
+      for (const [c, ...a] of SNAPSHOTS[name]) await commands[c](...a);
+      const app = await connect();
+      await app.evaluate(
+        `document.head.insertAdjacentHTML('beforeend', '<style>*{caret-color:transparent!important;animation:none!important;transition:none!important}</style>')`,
+      );
+      await sleep(300);
+      const { data } = await app.send('Page.captureScreenshot', {
+        format: 'png',
+      });
+      const baseline = path.join(skill, 'snapshots', `${name}.png`);
+      if (update || !fs.existsSync(baseline)) {
+        fs.mkdirSync(path.dirname(baseline), { recursive: true });
+        fs.writeFileSync(baseline, Buffer.from(data, 'base64'));
+        console.log(`${name}: saved baseline`);
+        continue;
+      }
+      const old = fs.readFileSync(baseline).toString('base64');
+      const { changed, diff } = await app.evaluate(compare(old, data));
+      if (!changed) {
+        console.log(`${name}: ok`);
+        continue;
+      }
+      const out = path.join(dir, 'snapshots', name);
+      fs.mkdirSync(out, { recursive: true });
+      fs.writeFileSync(
+        path.join(out, 'actual.png'),
+        Buffer.from(data, 'base64'),
+      );
+      if (diff)
+        fs.writeFileSync(
+          path.join(out, 'diff.png'),
+          Buffer.from(diff, 'base64'),
+        );
+      console.log(`${name}: ${changed} pixels changed, see ${out}`);
+      process.exitCode = 1;
+    }
+  },
+
   async eval(expression) {
     console.log(
       JSON.stringify(await (await connect()).evaluate(expression), null, 2),
     );
   },
 
-  click: (target) => press(target),
+  click: (target, mod) => press(target, 'left', 1, shift(mod)),
   dblclick: (target) => press(target, 'left', 2),
   rightclick: (target) => press(target, 'right'),
 
@@ -225,20 +353,21 @@ const commands = {
     );
   },
 
-  async drag(from, to) {
+  async drag(from, to, mod) {
     const app = await connect();
     const a = point(from);
     const b = point(to);
+    const modifiers = shift(mod);
     await mouse(app, 'mouseMoved', a, { button: 'none' });
-    await mouse(app, 'mousePressed', a, { clickCount: 1 });
+    await mouse(app, 'mousePressed', a, { clickCount: 1, modifiers });
     for (let i = 1; i <= 10; i++)
       await mouse(
         app,
         'mouseMoved',
         { x: a.x + ((b.x - a.x) * i) / 10, y: a.y + ((b.y - a.y) * i) / 10 },
-        { buttons: 1 },
+        { buttons: 1, modifiers },
       );
-    await mouse(app, 'mouseReleased', b, { clickCount: 1 });
+    await mouse(app, 'mouseReleased', b, { clickCount: 1, modifiers });
   },
 
   async type(text) {
@@ -283,9 +412,9 @@ const commands = {
 
 if (!commands[cmd]) {
   console.error(
-    'usage: node scripts/ui.mjs start [WxH] | reset [json] | shot [file] | click|dblclick|rightclick|hover <css|text=...|x,y> | drag <x,y> <x,y> | wheel <x,y> <dx,dy> [Ctrl] | type <text> | key <[Ctrl+]Key> | eval <js> | stop',
+    'usage: node scripts/ui.mjs start [WxH] | reset [json] | shot [file] | snapshots [name...] [--update] | click|dblclick|rightclick|hover <css|text=...|x,y> | drag <x,y> <x,y> | wheel <x,y> <dx,dy> [Ctrl] | type <text> | key <[Ctrl+]Key> | eval <js> | stop',
   );
   process.exit(1);
 }
 await commands[cmd](...args);
-process.exit(0);
+process.exit();

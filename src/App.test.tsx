@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, expect, it } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { App } from './App';
 
 // jsdom has no canvas or font loading, so drawing is a no-op here.
@@ -106,6 +106,25 @@ it('resizes the selected rectangle from a corner handle', () => {
   drawRectangle();
   drag([300, 200], [400, 260]);
   expect(saved()).toMatchObject([{ x: 100, y: 100, w: 300, h: 160 }]);
+});
+
+it('snaps a moved shape into line with the middle of another, unless Alt is held', () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([400, 300], [500, 400]);
+  drag([450, 350], [203, 350]);
+  expect(saved()[1]).toMatchObject({ x: 150, y: 300 });
+  fireEvent.pointerDown(canvas(), at(200, 350));
+  fireEvent.pointerMove(canvas(), { ...at(206, 350), altKey: true });
+  fireEvent.pointerUp(canvas(), at(206, 350));
+  expect(saved()[1]).toMatchObject({ x: 156, y: 300 });
+});
+
+it('locks a connected arrow end to the middle of the facing side', () => {
+  drawRectangle();
+  fireEvent.keyDown(window, { key: 'a' });
+  drag([280, 120], [500, 230]);
+  expect(saved()[1]).toMatchObject({ x: 304, y: 150, w: 196, h: 80 });
 });
 
 it('labels a rectangle on double click and keeps it after a restart', () => {
@@ -327,4 +346,36 @@ it('jumps back up through nested rectangles from the breadcrumb', () => {
   expect(location()).toBeUndefined();
   fireEvent.doubleClick(canvas(), at(512, 384));
   expect(screen.getByRole('textbox')).toHaveProperty('value', 'api');
+});
+
+it('saves the drawing to a file and opens it back, undoably', async () => {
+  let file = '';
+  Object.assign(window, {
+    files: {
+      save: async (text: string) => void (file = text),
+      open: async () => file,
+    },
+  });
+  drawRectangle();
+  ctrl('s');
+  expect(JSON.parse(file)).toMatchObject({
+    type: 'infinidraw',
+    shapes: [{ type: 'rect', x: 100 }],
+  });
+  fireEvent.click(screen.getByLabelText('Menu'));
+  choose('Clear canvas');
+  fireEvent.click(screen.getByLabelText('Menu'));
+  choose('Open');
+  await vi.waitFor(() => expect(saved()).toMatchObject([{ x: 100 }]));
+  ctrl('z');
+  expect(saved()).toEqual([]);
+});
+
+it('refuses to open a file that is not an infinidraw file', async () => {
+  window.alert = vi.fn();
+  Object.assign(window, { files: { open: async () => '{"shapes":[]}' } });
+  drawRectangle();
+  ctrl('o');
+  await vi.waitFor(() => expect(window.alert).toHaveBeenCalled());
+  expect(saved()).toHaveLength(1);
 });
