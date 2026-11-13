@@ -82,7 +82,7 @@ type Drag = {
   handle?: Point;
   ids?: string[];
   area?: Box;
-  down?: Point;
+  down: Point;
 };
 
 const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
@@ -431,7 +431,8 @@ export function App() {
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button === 2) return;
     const p = toWorld(e);
-    const d: Drag = { before: shapes, last: { x: e.clientX, y: e.clientY } };
+    const last = { x: e.clientX, y: e.clientY };
+    const d: Drag = { before: shapes, last, down: last };
     if (e.button === 1 || space.current) {
       d.pan = true;
       setCursor('grabbing');
@@ -451,7 +452,6 @@ export function App() {
       setSelectedIds([s.id]);
       d.id = s.id;
       d.handle = { x: 1, y: 1 };
-      d.down = d.last;
     } else if (!e.shiftKey && selected && handleAt(selected, p)) {
       d.handle = handleAt(selected, p);
       d.id = selected.id;
@@ -549,7 +549,7 @@ export function App() {
     if (tool !== 'select') {
       setTool('select');
       const drawn = shapes.find((s) => s.id === d.id);
-      const moved = Math.hypot(d.last.x - d.down!.x, d.last.y - d.down!.y);
+      const moved = Math.hypot(d.last.x - d.down.x, d.last.y - d.down.y);
       if (!drawn || moved < 4 * view.zoom) return setShapes(d.before);
     }
     commit(d.before, shapes);
