@@ -36,18 +36,13 @@ const NUDGE: Record<string, [number, number]> = {
   arrowup: [0, -1],
   arrowdown: [0, 1],
 };
-type Drag = {
-  before: Shape[];
-  last: Point;
-  pan?: boolean;
-  id?: string;
-  handle?: Point;
-  ids?: string[];
-  area?: Box;
-  down: Point;
-  guides?: [Point, Point][];
-  moves: (Point & { t: number })[];
-};
+// One pointer gesture; draw and resize both pull a handle, draw falls back to select on release.
+type Drag = { before: Shape[]; down: Point; last: Point } & (
+  | { kind: 'pan'; moves: (Point & { t: number })[] }
+  | { kind: 'area'; area: Box }
+  | { kind: 'move'; ids: string[]; guides: [Point, Point][] }
+  | { kind: 'draw' | 'resize'; id: string; handle: Point }
+);
 
 const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
   zoom,
@@ -131,12 +126,10 @@ export function App() {
   const [view, setView] = useState<View>(() =>
     JSON.parse(localStorage.getItem(VIEW_KEY) ?? '{"x":0,"y":0,"zoom":1}'),
   );
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    kind: 'shape' | 'canvas' | 'main';
-  }>();
-  const [help, setHelp] = useState(false);
+  const [overlay, setOverlay] = useState<
+    | { kind: 'shape' | 'canvas' | 'main'; x: number; y: number }
+    | { kind: 'help' }
+  >();
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const canvas = useRef<HTMLCanvasElement>(null);
   const drag = useRef<Drag>(null);
@@ -375,6 +368,7 @@ export function App() {
     c.height = c.clientHeight * devicePixelRatio;
     const css = getComputedStyle(document.documentElement);
     const color = (name: string) => css.getPropertyValue(name).trim();
+    const d = drag.current;
     const colors = {
       ink: color('--ink'),
       accent: color('--accent'),
@@ -387,14 +381,13 @@ export function App() {
       colors,
       selection,
       editing?.id,
-      drag.current?.area,
-      shapes.find(
-        (s) =>
-          drag.current?.handle &&
-          selected?.type === 'arrow' &&
-          s.id === (drag.current.handle.x ? selected.to : selected.from),
-      ),
-      drag.current?.guides,
+      d?.kind === 'area' ? d.area : undefined,
+      d && 'handle' in d && selected?.type === 'arrow'
+        ? shapes.find(
+            (s) => s.id === (d.handle.x ? selected.to : selected.from),
+          )
+        : undefined,
+      d?.kind === 'move' ? d.guides : undefined,
     );
   });
 
@@ -428,14 +421,13 @@ export function App() {
         setCursor('grab');
       }
       if (key === 'escape') {
-        if (!menu && !help) {
+        if (!overlay) {
           setTool('select');
           setSelectedIds([]);
         }
-        setMenu(undefined);
-        setHelp(false);
+        setOverlay(undefined);
       }
-      if (key === '?') setHelp(true);
+      if (key === '?') setOverlay({ kind: 'help' });
       if (e.shiftKey && (e.code === 'Digit1' || e.code === 'Digit2'))
         return fit(e.code === 'Digit1' ? shapes : selection);
       if (key === 'delete' || key === 'backspace') remove();
@@ -482,9 +474,10 @@ export function App() {
     stop();
     const p = toWorld(e);
     const last = { x: e.clientX, y: e.clientY };
-    const d: Drag = { before: shapes, last, down: last, moves: [] };
+    const base = { before: shapes, last, down: last };
+    drag.current = null;
     if (e.button === 1 || space.current) {
-      d.pan = true;
+      drag.current = { ...base, kind: 'pan', moves: [] };
       setCursor('grabbing');
     } else if (tool !== 'select') {
       const s: Shape = {
@@ -500,11 +493,15 @@ export function App() {
       };
       setShapes([...shapes, s]);
       setSelectedIds([s.id]);
-      d.id = s.id;
-      d.handle = { x: 1, y: 1 };
+      drag.current = {
+        ...base,
+        kind: 'draw',
+        id: s.id,
+        handle: { x: 1, y: 1 },
+      };
     } else if (!e.shiftKey && selected && handleAt(selected, p)) {
-      d.handle = handleAt(selected, p);
-      d.id = selected.id;
+      const handle = handleAt(selected, p)!;
+      drag.current = { ...base, kind: 'resize', id: selected.id, handle };
     } else {
       const s = shapeAt(p);
       let ids = e.shiftKey ? selectedIds : [];
@@ -516,10 +513,11 @@ export function App() {
             : selectedIds;
       setSelectedIds(ids);
       // Pressing a selected shape moves the whole selection, empty canvas starts a selection box.
-      if (!s) d.area = { ...p, w: 0, h: 0 };
-      else if (ids.includes(s.id)) d.ids = ids;
+      if (!s)
+        drag.current = { ...base, kind: 'area', area: { ...p, w: 0, h: 0 } };
+      else if (ids.includes(s.id))
+        drag.current = { ...base, kind: 'move', ids, guides: [] };
     }
-    drag.current = d;
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -547,23 +545,22 @@ export function App() {
     const dx = e.clientX - d.last.x;
     const dy = e.clientY - d.last.y;
     d.last = { x: e.clientX, y: e.clientY };
-    if (d.pan) {
+    if (d.kind === 'pan') {
       d.moves.push({ ...d.last, t: performance.now() });
       return setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
     }
     const p = toWorld(e);
-    if (d.area) {
+    if (d.kind === 'area') {
       d.area = { ...d.area, w: p.x - d.area.x, h: p.y - d.area.y };
       return redraw();
     }
-    const f = d.handle;
-    if (d.ids) {
+    if (d.kind === 'move') {
       const box = extent(
-        d.before.filter((s) => d.ids!.includes(s.id)),
+        d.before.filter((s) => d.ids.includes(s.id)),
         0,
       );
       const others = d.before.filter(
-        (s) => s.type !== 'arrow' && !d.ids!.includes(s.id),
+        (s) => s.type !== 'arrow' && !d.ids.includes(s.id),
       );
       const off = {
         x: (e.clientX - d.down.x) / view.zoom,
@@ -579,15 +576,14 @@ export function App() {
       d.guides = n.guides;
       return setShapes(
         d.before.map((s) =>
-          d.ids!.includes(s.id)
-            ? shift(s, off.x + n.x, off.y + n.y, d.ids!)
-            : s,
+          d.ids.includes(s.id) ? shift(s, off.x + n.x, off.y + n.y, d.ids) : s,
         ),
       );
     }
+    const f = d.handle;
     setShapes((all) =>
       all.map((s) => {
-        if (s.id !== d.id || !f) return s;
+        if (s.id !== d.id) return s;
         return {
           ...s,
           x: f.x ? s.x : p.x,
@@ -604,7 +600,8 @@ export function App() {
   const onPointerUp = () => {
     const d = drag.current;
     drag.current = null;
-    if (d?.pan) {
+    if (!d) return;
+    if (d.kind === 'pan') {
       setCursor(space.current ? 'grab' : toolCursor);
       // Keeps the pan's last ~80ms of speed (px/ms) and lets it decay.
       const recent = d.moves.filter((m) => performance.now() - m.t < 80);
@@ -620,8 +617,7 @@ export function App() {
         return Math.hypot(vx, vy) * left > 0.01;
       });
     }
-    if (!d) return;
-    if (d.area) {
+    if (d.kind === 'area') {
       const a = bounds(d.area);
       const within = shapes.filter((s) => {
         const b = bounds(s);
@@ -636,7 +632,7 @@ export function App() {
         ...new Set([...selectedIds, ...within.map((s) => s.id)]),
       ]);
     }
-    if (tool !== 'select') {
+    if (d.kind === 'draw') {
       setTool('select');
       const drawn = shapes.find((s) => s.id === d.id);
       const moved = Math.hypot(d.last.x - d.down.x, d.last.y - d.down.y);
@@ -678,7 +674,7 @@ export function App() {
     e.preventDefault();
     const s = shapeAt(toWorld(e));
     if (!s || !selectedIds.includes(s.id)) setSelectedIds(s ? [s.id] : []);
-    setMenu({ x: e.clientX, y: e.clientY, kind: s ? 'shape' : 'canvas' });
+    setOverlay({ x: e.clientX, y: e.clientY, kind: s ? 'shape' : 'canvas' });
   };
 
   const menus = {
@@ -723,7 +719,11 @@ export function App() {
         label: theme === 'dark' ? 'Light mode' : 'Dark mode',
         run: toggleTheme,
       },
-      { label: 'Keyboard shortcuts', keys: '?', run: () => setHelp(true) },
+      {
+        label: 'Keyboard shortcuts',
+        keys: '?',
+        run: () => setOverlay({ kind: 'help' }),
+      },
       { label: 'Clear canvas', run: clear, separator: true },
     ],
   };
@@ -773,7 +773,7 @@ export function App() {
           className={PANEL_BUTTON}
           title="Menu"
           aria-label="Menu"
-          onClick={() => setMenu({ x: 12, y: 58, kind: 'main' })}
+          onClick={() => setOverlay({ x: 12, y: 58, kind: 'main' })}
         >
           <Icon d="M3 5h14M3 10h14M3 15h14" />
         </button>
@@ -791,16 +791,18 @@ export function App() {
         onRedo={redo}
       />
 
-      {menu && (
-        <Menu
-          x={menu.x}
-          y={menu.y}
-          items={menus[menu.kind]}
-          onClose={() => setMenu(undefined)}
-        />
+      {overlay?.kind === 'help' ? (
+        <ShortcutsDialog onClose={() => setOverlay(undefined)} />
+      ) : (
+        overlay && (
+          <Menu
+            x={overlay.x}
+            y={overlay.y}
+            items={menus[overlay.kind]}
+            onClose={() => setOverlay(undefined)}
+          />
+        )
       )}
-
-      {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
 
       {edited && (
         <TextEditor

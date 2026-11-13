@@ -56,8 +56,8 @@ export function Menu(p: {
               className={`${BUTTON} flex items-center justify-between gap-6 px-2 text-left`}
               disabled={i.disabled}
               onClick={() => {
-                i.run();
                 p.onClose();
+                i.run();
               }}
             >
               {i.label}
