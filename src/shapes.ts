@@ -175,12 +175,7 @@ export const route = (s: Shape, shapes: Shape[] = []): Point[] => {
     : [a, { x: a.x, y: my }, { x: b.x, y: my }, b];
 };
 
-export const hit = (
-  s: Shape,
-  p: Point,
-  tolerance: number,
-  shapes: Shape[] = [],
-) => {
+export const hit = (s: Shape, p: Point, tolerance: number, shapes: Shape[]) => {
   if (s.type !== 'arrow') {
     const b = bounds(s);
     return (
@@ -211,8 +206,7 @@ function paint(
   for (const s of shapes) {
     ctx.strokeStyle = ctx.fillStyle = s.color ?? ink;
     const points = route(s, shapes);
-    const end = points.at(-1)!;
-    const last = { x: end.x - points.at(-2)!.x, y: end.y - points.at(-2)!.y };
+    const [prev, end] = points.slice(-2);
     ctx.setLineDash(s.dotted ? [1, 6] : []);
     ctx.beginPath();
     if (s.type === 'rect') ctx.roundRect(s.x, s.y, s.w, s.h, 6);
@@ -220,8 +214,11 @@ function paint(
     ctx.stroke();
 
     if (s.type === 'arrow') {
-      const angle = Math.atan2(last.y, last.x);
-      const length = Math.min(14, Math.hypot(last.x, last.y) / 2);
+      const angle = Math.atan2(end.y - prev.y, end.x - prev.x);
+      const length = Math.min(
+        14,
+        Math.hypot(end.x - prev.x, end.y - prev.y) / 2,
+      );
       ctx.setLineDash([]);
       ctx.beginPath();
       for (const a of [angle - 0.45, angle + 0.45]) {

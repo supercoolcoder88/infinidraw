@@ -603,11 +603,10 @@ export function App() {
       if (!a || b.t === a.t) return;
       const vx = (b.x - a.x) / (b.t - a.t);
       const vy = (b.y - a.y) / (b.t - a.t);
-      const from = view;
       return loop((ms) => {
         const left = Math.exp(-ms / 300);
         const glided = 300 * (1 - left);
-        setView({ ...from, x: from.x + vx * glided, y: from.y + vy * glided });
+        setView({ ...view, x: view.x + vx * glided, y: view.y + vy * glided });
         return Math.hypot(vx, vy) * left > 0.01;
       });
     }
