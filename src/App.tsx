@@ -338,7 +338,7 @@ export function App() {
   const under = (p: Point, tolerance: number) => {
     const area = (s: Shape) => (s.type === 'arrow' ? 0 : Math.abs(s.w * s.h));
     return shapes
-      .filter((s) => hit(s, p, tolerance))
+      .filter((s) => hit(s, p, tolerance, shapes))
       .sort((a, b) => area(a) - area(b));
   };
   const shapeAt = (p: Point) => under(p, 6 / view.zoom)[0];

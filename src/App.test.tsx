@@ -653,10 +653,37 @@ it('keeps a bound elbow arrow attached when a rectangle moves', () => {
   fireEvent.click(screen.getByLabelText('Elbow'));
   drawArrow([200, 150], [600, 450]);
   drag([600, 450], [600, 850]);
-  expect(route(saved()[2])).toEqual([
+  expect(route(saved()[2], saved())).toEqual([
     { x: 200, y: 204 },
     { x: 200, y: 500 },
     { x: 600, y: 500 },
     { x: 600, y: 796 },
   ]);
+});
+
+type P = { x: number; y: number };
+// True when the segment from p to q leaves the box's side that p sits on at a right angle.
+const perpendicular = (p: P, q: P, b: P & { w: number; h: number }) =>
+  p.y < b.y || p.y > b.y + b.h ? p.x === q.x : p.y === q.y;
+const boundBetweenOffsetRects = () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([500, 400], [700, 500]);
+  drawArrow([200, 150], [600, 450]);
+  drag([600, 450], [600, 650]);
+  return saved();
+};
+
+it('bends a bound elbow arrow once when its rectangles sit diagonally close', () => {
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  const [a, b, arrow] = boundBetweenOffsetRects();
+  const points = route(arrow, saved());
+  expect(points).toHaveLength(3);
+  expect(perpendicular(points[0], points[1], a)).toBe(true);
+  expect(perpendicular(points.at(-1)!, points.at(-2)!, b)).toBe(true);
+});
+
+it('keeps bound straight arrows on the side facing the other end', () => {
+  const arrow = boundBetweenOffsetRects()[2];
+  expect(arrow).toMatchObject({ x: 200, y: 204, w: 400, h: 392 });
 });

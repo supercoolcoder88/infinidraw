@@ -70,12 +70,12 @@ export const connect = (shapes: Shape[]) => {
     const b = s && bounds(s);
     return b && { x: b.x + b.w / 2, y: b.y + b.h / 2 };
   };
-  const edge = (s: Shape, p: Point) => {
+  const edge = (s: Shape, p: Point, sideways?: boolean) => {
     const b = bounds(s);
     const c = centre(s)!;
     const dx = p.x - c.x;
     const dy = p.y - c.y;
-    return Math.abs(dx) * b.h > Math.abs(dy) * b.w
+    return (sideways ?? Math.abs(dx) * b.h > Math.abs(dy) * b.w)
       ? { x: c.x + Math.sign(dx) * (b.w / 2 + GAP), y: c.y }
       : { x: c.x, y: c.y + (dy < 0 ? -1 : 1) * (b.h / 2 + GAP) };
   };
@@ -85,8 +85,19 @@ export const connect = (shapes: Shape[]) => {
     const b = find(s.to);
     const start = centre(a) ?? { x: s.x, y: s.y };
     const end = centre(b) ?? { x: s.x + s.w, y: s.y + s.h };
-    const p = a ? edge(a, end) : start;
-    const q = b ? edge(b, start) : end;
+    const ends = (sideways?: boolean, toSideways = sideways) => [
+      a ? edge(a, end, sideways) : start,
+      b ? edge(b, start, toSideways) : end,
+    ];
+    const wide = ([p, q]: Point[]) =>
+      Math.abs(q.x - p.x) >= Math.abs(q.y - p.y);
+    // Elbows face each other across x, else across y, else bend once from a side into a top or bottom.
+    let [p, q] = ends();
+    if (s.elbow) {
+      [p, q] = ends(true);
+      if (!wide([p, q]))
+        [p, q] = wide(ends(false)) ? ends(true, false) : ends(false);
+    }
     return {
       ...s,
       x: p.x,
@@ -144,19 +155,32 @@ export const handles = (s: Shape): Point[] =>
           : []),
       ];
 
-// Elbow arrows bend at mid x when wider than tall, else at mid y.
-export const route = (s: Shape): Point[] => {
+// Elbow ends leave bound shapes at right angles to their side, free ends along the longer axis.
+export const route = (s: Shape, shapes: Shape[] = []): Point[] => {
   const a = { x: s.x, y: s.y };
   const b = { x: s.x + s.w, y: s.y + s.h };
   if (!s.elbow || !s.w || !s.h) return [a, b];
+  const sideways = (p: Point, id?: string) => {
+    const o = shapes.find((t) => t.id === id);
+    const r = o && bounds(o);
+    return r ? p.x < r.x || p.x > r.x + r.w : Math.abs(s.w) >= Math.abs(s.h);
+  };
+  const across = sideways(a, s.from);
+  if (across !== sideways(b, s.to))
+    return [a, across ? { x: b.x, y: a.y } : { x: a.x, y: b.y }, b];
   const mx = a.x + s.w / 2;
   const my = a.y + s.h / 2;
-  return Math.abs(s.w) >= Math.abs(s.h)
+  return across
     ? [a, { x: mx, y: a.y }, { x: mx, y: b.y }, b]
     : [a, { x: a.x, y: my }, { x: b.x, y: my }, b];
 };
 
-export const hit = (s: Shape, p: Point, tolerance: number) => {
+export const hit = (
+  s: Shape,
+  p: Point,
+  tolerance: number,
+  shapes: Shape[] = [],
+) => {
   if (s.type !== 'arrow') {
     const b = bounds(s);
     return (
@@ -166,7 +190,7 @@ export const hit = (s: Shape, p: Point, tolerance: number) => {
       p.y <= b.y + b.h + tolerance
     );
   }
-  const points = route(s);
+  const points = route(s, shapes);
   return points.slice(1).some((b, i) => {
     const a = points[i];
     const w = b.x - a.x;
@@ -186,7 +210,7 @@ function paint(
 ) {
   for (const s of shapes) {
     ctx.strokeStyle = ctx.fillStyle = s.color ?? ink;
-    const points = route(s);
+    const points = route(s, shapes);
     const end = points.at(-1)!;
     const last = { x: end.x - points.at(-2)!.x, y: end.y - points.at(-2)!.y };
     ctx.setLineDash(s.dotted ? [1, 6] : []);
