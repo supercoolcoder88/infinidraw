@@ -118,6 +118,7 @@ export function App() {
   );
   const [tool, setTool] = useState<Tool>('select');
   const [dotted, setDotted] = useState(false);
+  const [elbow, setElbow] = useState(false);
   const [color, setColor] = useState<string>();
   const [theme, setTheme] = useState(
     () =>
@@ -207,10 +208,14 @@ export function App() {
     const rest = shapes.filter((s) => !selection.includes(s));
     commit(shapes, front ? [...rest, ...selection] : [...selection, ...rest]);
   };
-  const restyle = (style: Partial<Shape>) =>
+  const restyle = (style: Partial<Shape>, type?: Shape['type']) =>
     commit(
       shapes,
-      shapes.map((s) => (selection.includes(s) ? { ...s, ...style } : s)),
+      shapes.map((s) =>
+        selection.includes(s) && (!type || s.type === type)
+          ? { ...s, ...style }
+          : s,
+      ),
     );
   const setStroke = (d: boolean) => {
     setDotted(d);
@@ -477,7 +482,7 @@ export function App() {
         dotted,
         text: '',
         color,
-        from: tool === 'arrow' ? targetAt(p, e.altKey) : undefined,
+        ...(tool === 'arrow' && { elbow, from: targetAt(p, e.altKey) }),
       };
       setShapes([...shapes, s]);
       setSelectedIds([s.id]);
@@ -740,9 +745,14 @@ export function App() {
 
       <StylePanel
         dotted={dotted}
+        elbow={elbow}
         color={color}
         selected={selection[0]}
         onStroke={setStroke}
+        onElbow={(e) => {
+          setElbow(e);
+          restyle({ elbow: e }, 'arrow');
+        }}
         onColor={(c) => {
           setColor(c);
           restyle({ color: c });

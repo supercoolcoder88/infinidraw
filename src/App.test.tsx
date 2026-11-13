@@ -8,6 +8,7 @@ import {
 } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { route } from './shapes';
 
 // jsdom has no canvas or font loading, so drawing is a no-op here.
 HTMLCanvasElement.prototype.getContext = (() =>
@@ -596,4 +597,66 @@ it('refuses to open a file that is not an infinidraw file', async () => {
   ctrl('o');
   await vi.waitFor(() => expect(window.alert).toHaveBeenCalled());
   expect(saved()).toHaveLength(1);
+});
+
+const pressed = (name: string) =>
+  screen.getByLabelText(name).getAttribute('aria-pressed');
+const drawArrow = (from: [number, number], to: [number, number]) => {
+  fireEvent.keyDown(window, { key: 'a' });
+  drag(from, to);
+};
+
+it('draws elbow arrows once elbow is chosen, leaving other shapes alone', () => {
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  drawArrow([400, 400], [500, 450]);
+  drawRectangle();
+  expect(saved()[0]).toMatchObject({ type: 'arrow', elbow: true });
+  expect(saved()[1]).not.toHaveProperty('elbow');
+});
+
+it('switches the selected arrow between straight and elbow', () => {
+  drawArrow([400, 400], [500, 450]);
+  expect(pressed('Straight')).toBe('true');
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  expect(saved()[0].elbow).toBe(true);
+  expect(pressed('Elbow')).toBe('true');
+  fireEvent.click(screen.getByLabelText('Straight'));
+  expect(saved()[0].elbow).toBeFalsy();
+  expect(pressed('Straight')).toBe('true');
+});
+
+it('makes only the arrows in a mixed selection elbowed', () => {
+  drawRectangle();
+  drawArrow([400, 400], [500, 450]);
+  fireEvent.pointerDown(canvas(), { ...at(200, 150), shiftKey: true });
+  fireEvent.pointerUp(canvas(), at(200, 150));
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  expect(saved()[0]).not.toHaveProperty('elbow');
+  expect(saved()[1].elbow).toBe(true);
+});
+
+it('selects an elbow arrow along its bends, not along the straight diagonal', () => {
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  drawArrow([100, 100], [300, 200]);
+  drag([150, 125], [150, 125]);
+  fireEvent.keyDown(window, { key: 'Delete' });
+  expect(saved()).toHaveLength(1);
+  drag([200, 100], [200, 100]);
+  fireEvent.keyDown(window, { key: 'Delete' });
+  expect(saved()).toEqual([]);
+});
+
+it('keeps a bound elbow arrow attached when a rectangle moves', () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([500, 400], [700, 500]);
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  drawArrow([200, 150], [600, 450]);
+  drag([600, 450], [600, 850]);
+  expect(route(saved()[2])).toEqual([
+    { x: 200, y: 204 },
+    { x: 200, y: 500 },
+    { x: 600, y: 500 },
+    { x: 600, y: 796 },
+  ]);
 });

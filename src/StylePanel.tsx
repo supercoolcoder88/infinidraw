@@ -13,9 +13,11 @@ const COLORS = [
 
 export function StylePanel(p: {
   dotted: boolean;
+  elbow: boolean;
   color?: string;
   selected?: Shape;
   onStroke: (dotted: boolean) => void;
+  onElbow: (elbow: boolean) => void;
   onColor: (color?: string) => void;
 }) {
   const current = p.selected ?? p;
@@ -36,6 +38,21 @@ export function StylePanel(p: {
               strokeWidth={d ? 2.5 : undefined}
               strokeDasharray={d ? '0 4' : undefined}
             />
+          </svg>
+        </button>
+      ))}
+      <hr className="mx-1 my-0.5 border-border" />
+      {[false, true].map((e) => (
+        <button
+          key={String(e)}
+          className={PANEL_BUTTON}
+          title={e ? 'Elbow' : 'Straight'}
+          aria-label={e ? 'Elbow' : 'Straight'}
+          aria-pressed={!!current.elbow === e}
+          onClick={() => p.onElbow(e)}
+        >
+          <svg viewBox="0 0 20 20" className={ICON}>
+            <path d={e ? 'M3 16h7V4h7' : 'M3 17L17 3'} />
           </svg>
         </button>
       ))}

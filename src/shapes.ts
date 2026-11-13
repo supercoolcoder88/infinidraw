@@ -7,6 +7,7 @@ export type Shape = {
   w: number;
   h: number;
   dotted: boolean;
+  elbow?: boolean;
   text: string;
   color?: string;
   children?: Shape[];
@@ -143,6 +144,18 @@ export const handles = (s: Shape): Point[] =>
           : []),
       ];
 
+// Elbow arrows bend at mid x when wider than tall, else at mid y.
+export const route = (s: Shape): Point[] => {
+  const a = { x: s.x, y: s.y };
+  const b = { x: s.x + s.w, y: s.y + s.h };
+  if (!s.elbow || !s.w || !s.h) return [a, b];
+  const mx = a.x + s.w / 2;
+  const my = a.y + s.h / 2;
+  return Math.abs(s.w) >= Math.abs(s.h)
+    ? [a, { x: mx, y: a.y }, { x: mx, y: b.y }, b]
+    : [a, { x: a.x, y: my }, { x: b.x, y: my }, b];
+};
+
 export const hit = (s: Shape, p: Point, tolerance: number) => {
   if (s.type !== 'arrow') {
     const b = bounds(s);
@@ -153,10 +166,15 @@ export const hit = (s: Shape, p: Point, tolerance: number) => {
       p.y <= b.y + b.h + tolerance
     );
   }
-  const along =
-    ((p.x - s.x) * s.w + (p.y - s.y) * s.h) / (s.w ** 2 + s.h ** 2 || 1);
-  const t = Math.max(0, Math.min(1, along));
-  return Math.hypot(p.x - s.x - t * s.w, p.y - s.y - t * s.h) <= tolerance;
+  const points = route(s);
+  return points.slice(1).some((b, i) => {
+    const a = points[i];
+    const w = b.x - a.x;
+    const h = b.y - a.y;
+    const along = ((p.x - a.x) * w + (p.y - a.y) * h) / (w ** 2 + h ** 2 || 1);
+    const t = Math.max(0, Math.min(1, along));
+    return Math.hypot(p.x - a.x - t * w, p.y - a.y - t * h) <= tolerance;
+  });
 };
 
 function paint(
@@ -168,19 +186,18 @@ function paint(
 ) {
   for (const s of shapes) {
     ctx.strokeStyle = ctx.fillStyle = s.color ?? ink;
-    const end = { x: s.x + s.w, y: s.y + s.h };
+    const points = route(s);
+    const end = points.at(-1)!;
+    const last = { x: end.x - points.at(-2)!.x, y: end.y - points.at(-2)!.y };
     ctx.setLineDash(s.dotted ? [1, 6] : []);
     ctx.beginPath();
     if (s.type === 'rect') ctx.roundRect(s.x, s.y, s.w, s.h, 6);
-    if (s.type === 'arrow') {
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(end.x, end.y);
-    }
+    if (s.type === 'arrow') for (const q of points) ctx.lineTo(q.x, q.y);
     ctx.stroke();
 
     if (s.type === 'arrow') {
-      const angle = Math.atan2(s.h, s.w);
-      const length = Math.min(14, Math.hypot(s.w, s.h) / 2);
+      const angle = Math.atan2(last.y, last.x);
+      const length = Math.min(14, Math.hypot(last.x, last.y) / 2);
       ctx.setLineDash([]);
       ctx.beginPath();
       for (const a of [angle - 0.45, angle + 0.45]) {
