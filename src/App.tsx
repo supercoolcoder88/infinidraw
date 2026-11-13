@@ -3,12 +3,14 @@ import {
   bounds,
   draw,
   exportPng,
+  extent,
   FONT,
   frame,
   handles,
   hit,
   LINE,
   textSize,
+  type Box,
   type Point,
   type Shape,
   type View,
@@ -40,6 +42,9 @@ const SHORTCUTS = [
   ['1 – 5', 'Toolbar buttons'],
   ['Space + drag', 'Pan'],
   ['Double-click', 'Add or edit text'],
+  ['Shift+click', 'Add to selection'],
+  ['Drag on canvas', 'Select area'],
+  ['Ctrl+C / Ctrl+V', 'Copy / paste'],
   ['Ctrl+D', 'Duplicate'],
   ['Delete', 'Delete'],
   ['Arrows', 'Nudge 1px, 10px with Shift'],
@@ -70,6 +75,8 @@ type Drag = {
   pan?: boolean;
   id?: string;
   handle?: Point;
+  ids?: string[];
+  area?: Box;
 };
 
 const zoomAt = (v: View, zoom: number, cx: number, cy: number): View => ({
@@ -105,6 +112,13 @@ const nest = (
       )
     : f(level);
 const name = (s: Shape) => s.text.split('\n')[0] || 'Untitled';
+const clone = (s: Shape, dx = 0, dy = 0): Shape => ({
+  ...s,
+  id: crypto.randomUUID(),
+  x: s.x + dx,
+  y: s.y + dy,
+  children: s.children?.map((c) => clone(c)),
+});
 
 export function App() {
   const [root, setRoot] = useState<Shape[]>(() =>
@@ -121,7 +135,7 @@ export function App() {
       localStorage.getItem(THEME_KEY) ??
       (matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   );
-  const [selectedId, setSelectedId] = useState<string>();
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editing, setEditing] = useState<{ id: string; before: Shape[] }>();
   const [view, setView] = useState<View>(() =>
     JSON.parse(localStorage.getItem(VIEW_KEY) ?? '{"x":0,"y":0,"zoom":1}'),
@@ -138,6 +152,8 @@ export function App() {
   const past = useRef<Shape[][]>([]);
   const future = useRef<Shape[][]>([]);
   const space = useRef(false);
+  const clipboard = useRef<Shape[]>([]);
+  const pointer = useRef<{ clientX: number; clientY: number }>(null);
 
   // The rectangles we are inside, outermost first, and the shapes of the innermost.
   const trail: Shape[] = [];
@@ -155,7 +171,8 @@ export function App() {
       nest(r, ids, typeof next === 'function' ? next : () => next),
     );
 
-  const selected = shapes.find((s) => s.id === selectedId);
+  const selection = shapes.filter((s) => selectedIds.includes(s.id));
+  const selected = selection.length === 1 ? selection[0] : undefined;
   const edited = shapes.find((s) => s.id === editing?.id);
 
   const commit = (before: Shape[], next: Shape[]) => {
@@ -177,28 +194,34 @@ export function App() {
   const remove = () =>
     commit(
       shapes,
-      shapes.filter((s) => s.id !== selectedId),
+      shapes.filter((s) => !selection.includes(s)),
     );
-  const duplicate = () => {
-    if (!selected) return;
-    const copy = {
-      ...selected,
-      id: crypto.randomUUID(),
-      x: selected.x + 16,
-      y: selected.y + 16,
-    };
-    commit(shapes, [...shapes, copy]);
-    setSelectedId(copy.id);
+  const add = (copies: Shape[]) => {
+    commit(shapes, [...shapes, ...copies]);
+    setSelectedIds(copies.map((s) => s.id));
+  };
+  const duplicate = () => add(selection.map((s) => clone(s, 16, 16)));
+  // Pastes with the copied group centred on the pointer, or the window when it never moved.
+  const paste = () => {
+    if (!clipboard.current.length) return;
+    const b = extent(clipboard.current);
+    const p = toWorld(
+      pointer.current ?? { clientX: innerWidth / 2, clientY: innerHeight / 2 },
+    );
+    add(
+      clipboard.current.map((s) =>
+        clone(s, p.x - b.x - b.w / 2, p.y - b.y - b.h / 2),
+      ),
+    );
   };
   const reorder = (front: boolean) => {
-    if (!selected) return;
-    const rest = shapes.filter((s) => s !== selected);
-    commit(shapes, front ? [...rest, selected] : [selected, ...rest]);
+    const rest = shapes.filter((s) => !selection.includes(s));
+    commit(shapes, front ? [...rest, ...selection] : [...selection, ...rest]);
   };
   const restyle = (style: Partial<Shape>) =>
     commit(
       shapes,
-      shapes.map((s) => (s === selected ? { ...s, ...style } : s)),
+      shapes.map((s) => (selection.includes(s) ? { ...s, ...style } : s)),
     );
   const setStroke = (d: boolean) => {
     setDotted(d);
@@ -211,12 +234,12 @@ export function App() {
   };
   const clear = () => {
     commit(shapes, []);
-    setSelectedId(undefined);
+    setSelectedIds([]);
   };
   const go = (to: string[], v: View) => {
     setPath(to);
     setView(v);
-    setSelectedId(undefined);
+    setSelectedIds([]);
   };
   const enter = (s: Shape, v: View) => {
     const f = frame(s);
@@ -301,7 +324,15 @@ export function App() {
       accent: color('--accent'),
       surface: color('--surface'),
     };
-    draw(c.getContext('2d')!, shapes, view, colors, selected, editing?.id);
+    draw(
+      c.getContext('2d')!,
+      shapes,
+      view,
+      colors,
+      selection,
+      editing?.id,
+      drag.current?.area,
+    );
   });
 
   useEffect(() => {
@@ -318,6 +349,9 @@ export function App() {
         if (key === 'y' || (key === 'z' && e.shiftKey)) redo();
         else if (key === 'z') undo();
         else if (key === 'd') duplicate();
+        else if (key === 'c') {
+          if (selection.length) clipboard.current = selection;
+        } else if (key === 'v') paste();
         else if (key === '0') resetZoom();
         else if (key === '=' || key === '+') zoomBy(1.2);
         else if (key === '-') zoomBy(1 / 1.2);
@@ -331,7 +365,7 @@ export function App() {
       if (key === 'escape') {
         if (!menu && !help) {
           setTool('select');
-          setSelectedId(undefined);
+          setSelectedIds([]);
         }
         setMenu(undefined);
         setHelp(false);
@@ -339,13 +373,13 @@ export function App() {
       if (key === '?') setHelp(true);
       if (key === 'delete' || key === 'backspace') remove();
       const nudge = NUDGE[key];
-      if (nudge && selected) {
+      if (nudge && selection.length) {
         e.preventDefault();
         const k = e.shiftKey ? 10 : 1;
         commit(
           shapes,
           shapes.map((s) =>
-            s === selected
+            selection.includes(s)
               ? { ...s, x: s.x + nudge[0] * k, y: s.y + nudge[1] * k }
               : s,
           ),
@@ -389,18 +423,31 @@ export function App() {
         color,
       };
       setShapes([...shapes, s]);
-      setSelectedId(s.id);
+      setSelectedIds([s.id]);
       d.id = s.id;
       d.handle = { x: 1, y: 1 };
+    } else if (!e.shiftKey && selected && handleAt(selected, p)) {
+      d.handle = handleAt(selected, p);
+      d.id = selected.id;
     } else {
-      d.handle = selected && handleAt(selected, p);
-      d.id = (d.handle ? selected : shapeAt(p))?.id;
-      setSelectedId(d.id);
+      const s = shapeAt(p);
+      let ids = e.shiftKey ? selectedIds : [];
+      if (s)
+        ids = !selectedIds.includes(s.id)
+          ? [...ids, s.id]
+          : e.shiftKey
+            ? ids.filter((id) => id !== s.id)
+            : selectedIds;
+      setSelectedIds(ids);
+      // Pressing a selected shape moves the whole selection, empty canvas starts a selection box.
+      if (!s) d.area = { ...p, w: 0, h: 0 };
+      else if (ids.includes(s.id)) d.ids = ids;
     }
     drag.current = d;
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    pointer.current = { clientX: e.clientX, clientY: e.clientY };
     const d = drag.current;
     if (!d) {
       const p = toWorld(e);
@@ -426,12 +473,16 @@ export function App() {
     d.last = { x: e.clientX, y: e.clientY };
     if (d.pan) return setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
     const p = toWorld(e);
+    if (d.area) {
+      d.area = { ...d.area, w: p.x - d.area.x, h: p.y - d.area.y };
+      return redraw();
+    }
     const f = d.handle;
     setShapes((all) =>
       all.map((s) => {
-        if (s.id !== d.id) return s;
-        if (!f)
+        if (d.ids?.includes(s.id))
           return { ...s, x: s.x + dx / view.zoom, y: s.y + dy / view.zoom };
+        if (s.id !== d.id || !f) return s;
         return {
           ...s,
           x: f.x ? s.x : p.x,
@@ -448,6 +499,21 @@ export function App() {
     drag.current = null;
     if (d?.pan) setCursor(space.current ? 'grab' : toolCursor);
     if (!d || d.pan) return;
+    if (d.area) {
+      const a = bounds(d.area);
+      const within = shapes.filter((s) => {
+        const b = bounds(s);
+        return (
+          b.x >= a.x &&
+          b.y >= a.y &&
+          b.x + b.w <= a.x + a.w &&
+          b.y + b.h <= a.y + a.h
+        );
+      });
+      return setSelectedIds([
+        ...new Set([...selectedIds, ...within.map((s) => s.id)]),
+      ]);
+    }
     if (tool !== 'select') {
       setTool('select');
       const drawn = shapes.find((s) => s.id === d.id);
@@ -475,7 +541,7 @@ export function App() {
       };
       setShapes([...shapes, s]);
     }
-    setSelectedId(s.id);
+    setSelectedIds([s.id]);
     setEditing({ id: s.id, before: shapes });
   };
 
@@ -487,7 +553,7 @@ export function App() {
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     const s = shapeAt(toWorld(e));
-    setSelectedId(s?.id);
+    if (!s || !selectedIds.includes(s.id)) setSelectedIds(s ? [s.id] : []);
     setMenu({ x: e.clientX, y: e.clientY, kind: s ? 'shape' : 'canvas' });
   };
 
@@ -580,7 +646,7 @@ export function App() {
             data-key={d ? 5 : 4}
             title={d ? 'Dotted (5)' : 'Solid (4)'}
             aria-label={d ? 'Dotted' : 'Solid'}
-            aria-pressed={(selected ?? { dotted }).dotted === d}
+            aria-pressed={(selection[0] ?? { dotted }).dotted === d}
             onClick={() => setStroke(d)}
           >
             <svg viewBox="0 0 20 20">
@@ -600,7 +666,7 @@ export function App() {
             style={{ color: c.color ?? 'var(--ink)' }}
             title={c.label}
             aria-label={c.label}
-            aria-pressed={(selected ?? { color }).color === c.color}
+            aria-pressed={(selection[0] ?? { color }).color === c.color}
             onClick={() => {
               setColor(c.color);
               restyle({ color: c.color });

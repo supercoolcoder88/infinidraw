@@ -13,6 +13,7 @@ export type Shape = {
 };
 export type Point = { x: number; y: number };
 export type View = Point & { zoom: number };
+export type Box = Point & { w: number; h: number };
 
 export type Colors = { ink: string; accent: string; surface: string };
 const LIGHT = { ink: '#1c1c1a', accent: '', surface: '#fff' };
@@ -21,14 +22,14 @@ export const FONT = 16;
 export const LINE = FONT * 1.25;
 const PAD = 24;
 
-export const bounds = (s: Shape) => ({
+export const bounds = (s: Box) => ({
   x: Math.min(s.x, s.x + s.w),
   y: Math.min(s.y, s.y + s.h),
   w: Math.abs(s.w),
   h: Math.abs(s.h),
 });
 
-const extent = (shapes: Shape[]) => {
+export const extent = (shapes: Shape[]) => {
   const boxes = shapes.length
     ? shapes.map(bounds)
     : [{ x: 0, y: 0, w: 0, h: 0 }];
@@ -159,8 +160,9 @@ export function draw(
   shapes: Shape[],
   view: View,
   colors: Colors,
-  selected?: Shape,
+  selected: Shape[] = [],
   editingId?: string,
+  area?: Box,
   ratio = devicePixelRatio,
 ) {
   const scale = ratio * view.zoom;
@@ -171,29 +173,41 @@ export function draw(
   ctx.textBaseline = 'middle';
   paint(ctx, shapes, colors.ink, scale, editingId);
 
-  if (!selected) return;
   ctx.strokeStyle = colors.accent;
   ctx.fillStyle = colors.surface;
   ctx.lineWidth = 1.5 / view.zoom;
   ctx.setLineDash([]);
-  if (selected.type === 'text') {
-    const b = bounds(selected);
+  // One selected shape gets resize handles, several get an outline each.
+  const one = selected.length === 1 ? selected[0] : undefined;
+  for (const s of selected) {
+    if (one && s.type !== 'text') continue;
+    const b = bounds(s);
     ctx.beginPath();
     ctx.roundRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8, 4);
     ctx.stroke();
   }
-  for (const f of handles(selected)) {
-    ctx.beginPath();
-    ctx.arc(
-      selected.x + f.x * selected.w,
-      selected.y + f.y * selected.h,
-      4 / view.zoom,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-    ctx.stroke();
-  }
+  if (one)
+    for (const f of handles(one)) {
+      ctx.beginPath();
+      ctx.arc(
+        one.x + f.x * one.w,
+        one.y + f.y * one.h,
+        4 / view.zoom,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+      ctx.stroke();
+    }
+
+  if (!area) return;
+  const b = bounds(area);
+  ctx.fillStyle = colors.accent;
+  ctx.globalAlpha = 0.08;
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1 / view.zoom;
+  ctx.strokeRect(b.x, b.y, b.w, b.h);
 }
 
 export function exportPng(shapes: Shape[]) {
@@ -205,7 +219,16 @@ export function exportPng(shapes: Shape[]) {
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = LIGHT.surface;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  draw(ctx, shapes, { x: -x, y: -y, zoom: 1 }, LIGHT, undefined, undefined, 2);
+  draw(
+    ctx,
+    shapes,
+    { x: -x, y: -y, zoom: 1 },
+    LIGHT,
+    [],
+    undefined,
+    undefined,
+    2,
+  );
   const a = document.createElement('a');
   a.download = 'infinidraw.png';
   a.href = canvas.toDataURL('image/png');
