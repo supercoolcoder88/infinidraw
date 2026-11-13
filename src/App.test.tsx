@@ -687,3 +687,21 @@ it('keeps bound straight arrows on the side facing the other end', () => {
   const arrow = boundBetweenOffsetRects()[2];
   expect(arrow).toMatchObject({ x: 200, y: 204, w: 400, h: 392 });
 });
+
+it('attaches an arrow end to the rectangle edge it is dropped on and keeps it there', () => {
+  drawRectangle();
+  drawArrow([600, 150], [200, 105]);
+  expect(saved()[1]).toMatchObject({ x: 600, y: 150, w: -400, h: -54 });
+  drag([150, 180], [150, 230]);
+  expect(saved()[1]).toMatchObject({ x: 600, y: 150, w: -400, h: -4 });
+});
+
+it('leaves a bound elbow arrow at a right angle to the edge it was dropped on', () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Elbow'));
+  drawArrow([600, 150], [296, 160]);
+  drag([150, 180], [150, 580]);
+  const points = route(saved()[1], saved());
+  expect(points.at(-1)).toEqual({ x: 304, y: 550 });
+  expect(perpendicular(points.at(-1)!, points.at(-2)!, saved()[0])).toBe(true);
+});

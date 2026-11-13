@@ -14,7 +14,11 @@ export type Shape = {
   // Arrow ends bound to shapes on the same level.
   from?: string;
   to?: string;
+  // The rectangle side an end was dropped on, else it faces the other end.
+  fromSide?: Side;
+  toSide?: Side;
 };
+export type Side = 'top' | 'right' | 'bottom' | 'left';
 export type Point = { x: number; y: number };
 export type View = Point & { zoom: number };
 export type Box = Point & { w: number; h: number };
@@ -70,12 +74,12 @@ export const connect = (shapes: Shape[]) => {
     const b = s && bounds(s);
     return b && { x: b.x + b.w / 2, y: b.y + b.h / 2 };
   };
-  const edge = (s: Shape, p: Point, sideways?: boolean) => {
+  const edge = (s: Shape, p: Point, sideways?: boolean, side?: Side) => {
     const b = bounds(s);
     const c = centre(s)!;
-    const dx = p.x - c.x;
-    const dy = p.y - c.y;
-    return (sideways ?? Math.abs(dx) * b.h > Math.abs(dy) * b.w)
+    const dx = side ? +(side === 'right') - +(side === 'left') : p.x - c.x;
+    const dy = side ? +(side === 'bottom') - +(side === 'top') : p.y - c.y;
+    return (side ? dx : (sideways ?? Math.abs(dx) * b.h > Math.abs(dy) * b.w))
       ? { x: c.x + Math.sign(dx) * (b.w / 2 + GAP), y: c.y }
       : { x: c.x, y: c.y + (dy < 0 ? -1 : 1) * (b.h / 2 + GAP) };
   };
@@ -86,8 +90,8 @@ export const connect = (shapes: Shape[]) => {
     const start = centre(a) ?? { x: s.x, y: s.y };
     const end = centre(b) ?? { x: s.x + s.w, y: s.y + s.h };
     const ends = (sideways?: boolean, toSideways = sideways) => [
-      a ? edge(a, end, sideways) : start,
-      b ? edge(b, start, toSideways) : end,
+      a ? edge(a, end, sideways, s.fromSide) : start,
+      b ? edge(b, start, toSideways, s.toSide) : end,
     ];
     const wide = ([p, q]: Point[]) =>
       Math.abs(q.x - p.x) >= Math.abs(q.y - p.y);
@@ -106,8 +110,23 @@ export const connect = (shapes: Shape[]) => {
       h: q.y - p.y,
       from: a?.id,
       to: b?.id,
+      fromSide: a && s.fromSide,
+      toSide: b && s.toSide,
     };
   });
+};
+
+// The side of a box nearest p, if it is within reach.
+export const sideAt = (box: Box, p: Point, reach: number) => {
+  const b = bounds(box);
+  const gaps: [Side, number][] = [
+    ['top', Math.abs(p.y - b.y)],
+    ['right', Math.abs(b.x + b.w - p.x)],
+    ['bottom', Math.abs(b.y + b.h - p.y)],
+    ['left', Math.abs(p.x - b.x)],
+  ];
+  const [side, gap] = gaps.sort((a, b) => a[1] - b[1])[0];
+  return gap <= reach ? side : undefined;
 };
 
 // Nudges a box so its centre lines up with another box's centre within reach, with a guide joining each match.

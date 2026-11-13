@@ -9,6 +9,7 @@ import {
   handles,
   hit,
   LINE,
+  sideAt,
   snap,
   textSize,
   type Box,
@@ -342,10 +343,23 @@ export function App() {
       .sort((a, b) => area(a) - area(b));
   };
   const shapeAt = (p: Point) => under(p, 6 / view.zoom)[0];
-  const targetAt = (p: Point, alt?: boolean) =>
-    alt
+  // An arrow end binds to the shape under it, unless the other end has it, and to the rectangle side it's dropped on.
+  const bind = (
+    end: 'from' | 'to',
+    p: Point,
+    alt: boolean,
+    other?: string,
+  ): Partial<Shape> => {
+    const t = alt
       ? undefined
-      : under(p, 6 / view.zoom).find((s) => s.type !== 'arrow')?.id;
+      : under(p, 6 / view.zoom).find((s) => s.type !== 'arrow');
+    const id = t?.id === other ? undefined : t?.id;
+    const side =
+      id && t?.type === 'rect' ? sideAt(t, p, 16 / view.zoom) : undefined;
+    return end === 'from'
+      ? { from: id, fromSide: side }
+      : { to: id, toSide: side };
+  };
 
   useEffect(
     () => localStorage.setItem(STORAGE_KEY, JSON.stringify(root)),
@@ -482,7 +496,7 @@ export function App() {
         dotted,
         text: '',
         color,
-        ...(tool === 'arrow' && { elbow, from: targetAt(p, e.altKey) }),
+        ...(tool === 'arrow' && { elbow, ...bind('from', p, e.altKey) }),
       };
       setShapes([...shapes, s]);
       setSelectedIds([s.id]);
@@ -580,12 +594,8 @@ export function App() {
           y: f.y ? s.y : p.y,
           w: f.x ? p.x - s.x : s.x + s.w - p.x,
           h: f.y ? p.y - s.y : s.y + s.h - p.y,
-          // An end binds to the shape under it unless the other end already has it.
-          ...(s.type === 'arrow' && {
-            [f.x ? 'to' : 'from']: [targetAt(p, e.altKey)].find(
-              (t) => t !== (f.x ? s.from : s.to),
-            ),
-          }),
+          ...(s.type === 'arrow' &&
+            bind(f.x ? 'to' : 'from', p, e.altKey, f.x ? s.from : s.to)),
         };
       }),
     );
