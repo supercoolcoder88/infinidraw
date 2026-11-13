@@ -27,6 +27,7 @@ const drawRectangle = () => {
 };
 
 beforeEach(() => {
+  vi.useRealTimers();
   cleanup();
   localStorage.clear();
   render(<App />);
@@ -249,13 +250,82 @@ it('zooms with the buttons and resets to 100%', () => {
   expect(zoom()).toBe('100%');
 });
 
-it('nudges the selected shape by 1px, or 10px with Shift, one undo at a time', () => {
+const nudge = (key = 'ArrowRight', extra = {}) =>
+  fireEvent.keyDown(window, { key, ...extra });
+const release = (key = 'ArrowRight') => fireEvent.keyUp(window, { key });
+const box = () => saved().map((s: { x: number; y: number }) => [s.x, s.y]);
+
+it('nudges by 1px, or 10px with Shift, and undoes a held run in one step', () => {
   drawRectangle();
-  fireEvent.keyDown(window, { key: 'ArrowRight' });
-  fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
-  expect(saved()).toMatchObject([{ x: 101, y: 110 }]);
+  nudge();
+  nudge('ArrowDown', { shiftKey: true });
+  nudge('ArrowDown', { shiftKey: true, repeat: true });
+  expect(box()).toEqual([[101, 120]]);
   ctrl('z');
-  expect(saved()).toMatchObject([{ x: 101, y: 100 }]);
+  expect(box()).toEqual([[100, 100]]);
+});
+
+it('undoes five quick nudges in one step', () => {
+  drawRectangle();
+  for (let i = 0; i < 5; i++) nudge();
+  expect(box()).toEqual([[105, 100]]);
+  ctrl('z');
+  expect(box()).toEqual([[100, 100]]);
+});
+
+it('starts a new undo step once the arrow keys rest for half a second', () => {
+  vi.useFakeTimers();
+  drawRectangle();
+  nudge();
+  release();
+  vi.advanceTimersByTime(400);
+  nudge();
+  release();
+  vi.advanceTimersByTime(600);
+  nudge();
+  ctrl('z');
+  expect(box()).toEqual([[102, 100]]);
+  ctrl('z');
+  expect(box()).toEqual([[100, 100]]);
+});
+
+it('keeps nudges on either side of another change as separate undo steps', () => {
+  drawRectangle();
+  nudge();
+  nudge();
+  fireEvent.click(screen.getByLabelText('Red'));
+  nudge();
+  nudge();
+  ctrl('z');
+  expect(saved()).toMatchObject([{ x: 102, color: expect.any(String) }]);
+  ctrl('z');
+  expect(box()).toEqual([[102, 100]]);
+  expect(saved()[0].color).toBeUndefined();
+  ctrl('z');
+  expect(box()).toEqual([[100, 100]]);
+});
+
+it('keeps nudges of different selections as separate undo steps', () => {
+  drawRectangle();
+  fireEvent.click(screen.getByLabelText('Rectangle'));
+  drag([400, 400], [500, 450]);
+  nudge();
+  drag([90, 90], [310, 210]);
+  nudge();
+  expect(box()).toEqual([
+    [101, 100],
+    [401, 400],
+  ]);
+  ctrl('z');
+  expect(box()).toEqual([
+    [100, 100],
+    [401, 400],
+  ]);
+  ctrl('z');
+  expect(box()).toEqual([
+    [100, 100],
+    [400, 400],
+  ]);
 });
 
 it('opens the shortcuts dialog from the menu or with ? and closes it with Escape', () => {

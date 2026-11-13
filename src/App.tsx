@@ -133,6 +133,7 @@ export function App() {
   const drag = useRef<Drag>(null);
   const past = useRef<Shape[][]>([]);
   const future = useRef<Shape[][]>([]);
+  const nudged = useRef<{ ids: string; at: number }>(undefined);
   const space = useRef(false);
   const clipboard = useRef<Shape[]>([]);
   const pointer = useRef<{ clientX: number; clientY: number }>(null);
@@ -157,17 +158,19 @@ export function App() {
   const selected = selection.length === 1 ? selection[0] : undefined;
   const edited = shapes.find((s) => s.id === editing?.id);
 
-  const commit = (before: Shape[], next: Shape[]) => {
+  const commit = (before: Shape[], next: Shape[], merge = false) => {
     if (JSON.stringify(before) !== JSON.stringify(next)) {
-      past.current.push(nest(root, ids, () => before));
+      if (!merge) past.current.push(nest(root, ids, () => before));
       future.current = [];
     }
+    nudged.current = undefined;
     setShapes(next);
     redraw();
   };
   const timeTravel = (from: Shape[][], to: Shape[][]) => {
     const target = from.pop();
     if (!target) return;
+    nudged.current = undefined;
     to.push(root);
     setRoot(target);
   };
@@ -381,6 +384,8 @@ export function App() {
       if (nudge && selection.length) {
         e.preventDefault();
         const k = e.shiftKey ? 10 : 1;
+        const run = nudged.current;
+        const sel = selectedIds.join();
         commit(
           shapes,
           shapes.map((s) =>
@@ -388,7 +393,9 @@ export function App() {
               ? shift(s, nudge[0] * k, nudge[1] * k, selectedIds)
               : s,
           ),
+          run?.ids === sel && (e.repeat || Date.now() - run.at < 500),
         );
+        nudged.current = { ids: sel, at: Date.now() };
       }
       const shortcut = TOOLS.find(
         (t, i) => t.key === key || `${i + 1}` === key,
@@ -396,6 +403,9 @@ export function App() {
       if (shortcut) setTool(shortcut.tool);
     };
     const up = (e: KeyboardEvent) => {
+      // A run of nudges stays one undo step until the arrows rest for 500ms.
+      if (NUDGE[e.key.toLowerCase()] && nudged.current)
+        nudged.current.at = Date.now();
       if (e.key !== ' ') return;
       space.current = false;
       setCursor(toolCursor);
